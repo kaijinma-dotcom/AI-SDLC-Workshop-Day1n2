@@ -21,49 +21,49 @@ A three-level priority system (High / Medium / Low) that allows users to categor
 ## User Flow
 
 ### Assigning Priority on Create
-1. User opens the "Add Todo" form
-2. A priority selector (dropdown or segmented control) is visible with options: High, Medium, Low
+1. User opens the todo form at the top of the page
+2. Priority dropdown visible with options: High / Medium / Low
 3. Default selection is **Medium**
-4. User selects desired priority and submits the form
-5. The new todo appears with the appropriate color badge
+4. User selects desired priority and clicks "Add"
+5. New todo appears with appropriate color badge
 
 ### Changing Priority
-1. User opens the edit form/modal for an existing todo
-2. The current priority is pre-selected in the priority control
-3. User changes selection and saves
-4. Todo card badge updates immediately (optimistic UI)
+1. User clicks "Edit" on an existing todo
+2. Current priority is pre-selected in the edit modal dropdown
+3. User changes selection and clicks "Update"
+4. Todo card badge updates immediately
 
 ### Filtering by Priority
-1. Filter bar at the top of the todo list shows: All | High | Medium | Low
-2. User clicks a priority filter button
-3. List re-renders showing only todos matching the selected priority
-4. Active filter button is highlighted
-5. User can click the active filter again (or "All") to clear the filter
+1. Priority filter dropdown shows "All Priorities" by default
+2. User selects a priority (High / Medium / Low)
+3. List re-renders showing only matching todos
+4. User selects "All Priorities" to clear filter
 
 ### Automatic Sorting
-- Default sort order: High → Medium → Low, then by `createdAt` descending within each priority level
-- Sorting is applied client-side after data is fetched
+- Sort order: High → Medium → Low
+- Within same priority: earlier due date first → newest created first
 
 ---
 
 ## Technical Requirements
 
-### Database Changes
+### Database Schema
 
-Priority is stored as a `TEXT` column on the `todos` table (defined in PRP 01):
+Priority stored as a `TEXT` column on the `todos` table (see PRP 01):
 
 ```sql
 priority TEXT NOT NULL DEFAULT 'medium'
 -- Valid values: 'high' | 'medium' | 'low'
 ```
 
-No migration needed if PRP 01 schema is used from the start.
+No additional migration needed if PRP 01 schema is used.
 
 ### API Endpoints
 
-No new endpoints are needed. The existing `GET /api/todos` supports `?priority=high|medium|low` query parameter.
-
-Priority is included in `POST /api/todos` and `PUT /api/todos/[id]` request bodies.
+No new endpoints. Priority is included in:
+- `POST /api/todos` request body
+- `PUT /api/todos/[id]` request body
+- `GET /api/todos` response
 
 ### Sorting Logic (Client-Side)
 
@@ -79,8 +79,14 @@ export function sortByPriority(todos: Todo[]): Todo[] {
   return [...todos].sort((a, b) => {
     const priorityDiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
     if (priorityDiff !== 0) return priorityDiff;
-    // Secondary: newer todos first within same priority
-    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    // Secondary: earlier due date first
+    if (a.due_date && b.due_date) {
+      return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
+    }
+    if (a.due_date) return -1;
+    if (b.due_date) return 1;
+    // Tertiary: newer created first
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
 }
 ```
@@ -90,7 +96,7 @@ export function sortByPriority(todos: Todo[]): Todo[] {
 ```typescript
 export function filterByPriority(
   todos: Todo[],
-  priority: 'high' | 'medium' | 'low' | 'all'
+  priority: Priority | 'all'
 ): Todo[] {
   if (priority === 'all') return todos;
   return todos.filter((t) => t.priority === priority);
@@ -104,72 +110,61 @@ export type Priority = 'high' | 'medium' | 'low';
 
 export interface PriorityConfig {
   label: string;
-  color: string;       // Tailwind text color class
-  bgColor: string;     // Tailwind background color class
-  borderColor: string; // Tailwind border color class
+  color: string;        // Tailwind text color class
+  bgColor: string;      // Tailwind background color class
+  borderColor: string;  // Tailwind border color class
 }
 
 export const PRIORITY_CONFIG: Record<Priority, PriorityConfig> = {
   high: {
     label: 'High',
-    color: 'text-red-700',
-    bgColor: 'bg-red-100',
-    borderColor: 'border-red-300',
+    color: 'text-red-700 dark:text-red-400',
+    bgColor: 'bg-red-100 dark:bg-red-900/30',
+    borderColor: 'border-red-300 dark:border-red-700',
   },
   medium: {
     label: 'Medium',
-    color: 'text-yellow-700',
-    bgColor: 'bg-yellow-100',
-    borderColor: 'border-yellow-300',
+    color: 'text-yellow-700 dark:text-yellow-400',
+    bgColor: 'bg-yellow-100 dark:bg-yellow-900/30',
+    borderColor: 'border-yellow-300 dark:border-yellow-700',
   },
   low: {
     label: 'Low',
-    color: 'text-green-700',
-    bgColor: 'bg-green-100',
-    borderColor: 'border-green-300',
+    color: 'text-blue-700 dark:text-blue-400',
+    bgColor: 'bg-blue-100 dark:bg-blue-900/30',
+    borderColor: 'border-blue-300 dark:border-blue-700',
   },
 };
 ```
 
 ### Validation
 
-Priority must be one of `'high'`, `'medium'`, `'low'`. Any other value → 400 Bad Request with `{ error: "Invalid priority value" }`.
+Priority must be one of `'high'`, `'medium'`, `'low'`. Any other value → `400 Bad Request` with `{ error: "Invalid priority value" }`.
 
 ---
 
 ## UI Components
 
-### PriorityBadge
+### PriorityBadge (inline on todo card)
 ```tsx
-// Displays a color-coded badge for a given priority level
+// Displays a colored badge for a given priority level
 // Props: priority: Priority
-// Renders: <span> with appropriate Tailwind classes from PRIORITY_CONFIG
-interface PriorityBadgeProps {
-  priority: Priority;
-}
+// Renders: <span> with Tailwind classes from PRIORITY_CONFIG
+// Example: <span className="bg-red-100 text-red-700 ...">High</span>
 ```
 
-### PrioritySelect
+### Priority Dropdown (in todo form and edit modal)
 ```tsx
-// Dropdown or segmented control for selecting priority
-// Props: value: Priority, onChange: (p: Priority) => void
-// Used in: TodoForm (create and edit)
-interface PrioritySelectProps {
-  value: Priority;
-  onChange: (priority: Priority) => void;
-}
+// <select> with options: High | Medium | Low
+// Default value: 'medium'
+// Used in create form and edit modal
 ```
 
-### PriorityFilter
+### Priority Filter Dropdown (above todo list)
 ```tsx
-// Filter bar rendered above the todo list
-// Props: activeFilter: Priority | 'all', onFilterChange: (f: Priority | 'all') => void
-// Renders: "All | High | Medium | Low" button group
-// Active button has distinct visual treatment
-interface PriorityFilterProps {
-  activeFilter: Priority | 'all';
-  onFilterChange: (filter: Priority | 'all') => void;
-}
+// Dropdown: "All Priorities" | "High Priority" | "Medium Priority" | "Low Priority"
+// Active selection highlighted
+// Combines with search, tag, date, and completion filters
 ```
 
 ---
@@ -180,26 +175,24 @@ interface PriorityFilterProps {
 |----------|----------|
 | Todo created without priority field | Defaults to `'medium'` (DB default + API default) |
 | Invalid priority value in API request | 400 Bad Request with descriptive error |
-| All todos filtered out by priority | Show empty state: "No [priority] priority todos" |
-| Priority changed while filter is active | If new priority doesn't match filter, todo disappears from filtered view |
-| Completed todos with priority | Completed todos retain priority but appear visually muted |
+| All todos filtered out by priority | Show empty state per section |
+| Priority changed while filter is active | Todo disappears from filtered view if new priority doesn't match |
+| Completed todos with priority | Retain priority badge but appear visually muted in Completed section |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] Priority select shows three options: High, Medium, Low (default: Medium)
-- [ ] Each priority has a unique, accessible color-coded badge
-- [ ] High priority badge is red, Medium is yellow/amber, Low is green
-- [ ] Todo list defaults to High → Medium → Low sort order
-- [ ] Within the same priority, newer todos appear first
-- [ ] Filter buttons (All / High / Medium / Low) are visible above the list
-- [ ] Selecting a filter shows only matching todos
-- [ ] Active filter is visually highlighted
-- [ ] Clearing filter restores full list
-- [ ] Priority can be changed via the edit form
-- [ ] API rejects invalid priority values with 400
-- [ ] Priority badge is visible on each todo card
+- [ ] Priority dropdown shows three options: High, Medium, Low (default: Medium)
+- [ ] High priority badge is red, Medium is yellow/amber, Low is blue
+- [ ] Badges visible on every todo card in all sections (Overdue, Pending, Completed)
+- [ ] Todo list sorted High → Medium → Low within each section
+- [ ] Within same priority, earlier due dates appear first
+- [ ] Priority filter dropdown visible above todo list
+- [ ] Selecting a priority shows only matching todos
+- [ ] "All Priorities" restores full list
+- [ ] Priority can be changed via edit modal
+- [ ] Dark mode: badge colors adapt correctly
 
 ---
 
@@ -208,16 +201,14 @@ interface PriorityFilterProps {
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/priority.spec.ts
-
-test('create todo with high priority shows red badge', async ({ page }) => { /* ... */ });
-test('create todo with low priority shows green badge', async ({ page }) => { /* ... */ });
-test('default priority is medium', async ({ page }) => { /* ... */ });
-test('todos are sorted high before medium before low', async ({ page }) => { /* ... */ });
-test('filter by high shows only high priority todos', async ({ page }) => { /* ... */ });
-test('filter by all restores full list', async ({ page }) => { /* ... */ });
-test('change priority via edit form updates badge', async ({ page }) => { /* ... */ });
-test('empty state when no todos match filter', async ({ page }) => { /* ... */ });
+// tests/02-todo-crud.spec.ts (priority section)
+test('create todo with High priority shows red badge');
+test('create todo with Low priority shows blue badge');
+test('default priority is Medium');
+test('priority filter: selecting High shows only high-priority todos');
+test('priority filter: selecting All Priorities restores full list');
+test('todo list sorted high before medium before low');
+test('edit todo changes priority badge');
 ```
 
 ### Unit Tests
@@ -225,25 +216,17 @@ test('empty state when no todos match filter', async ({ page }) => { /* ... */ }
 ```typescript
 // tests/unit/priority.test.ts
 test('sortByPriority: high before medium before low');
-test('sortByPriority: within same priority, newer first');
-test('filterByPriority: returns all when filter is "all"');
-test('filterByPriority: returns only matching priority');
-test('PRIORITY_CONFIG has entries for high, medium, low');
+test('sortByPriority: same priority sorted by due date');
+test('filterByPriority: "all" returns all todos');
+test('filterByPriority: "high" returns only high todos');
+test('PRIORITY_CONFIG has correct label for each level');
 ```
 
 ---
 
 ## Out of Scope
 
-- Custom priority levels (user-defined)
-- Numeric priority values
-- Priority-based notifications or escalation
-- Server-side sorting (client-side is sufficient)
-
----
-
-## Success Metrics
-
-- Priority filter renders in < 100 ms (pure client-side)
-- Color contrast of badges meets WCAG AA (4.5:1 ratio)
-- 100% of priority values validated at API boundary
+- Custom priority levels beyond High/Medium/Low
+- Priority-based color themes for the entire card background
+- Automatic priority suggestions based on due date
+- Priority bulk change

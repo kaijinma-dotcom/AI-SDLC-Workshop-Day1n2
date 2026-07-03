@@ -23,40 +23,37 @@ Core create, read, update, and delete functionality for todos. This is the found
 ## User Flow
 
 ### Create Todo
-1. User clicks "Add Todo" / "+" button
-2. A form/modal appears with fields: title (required), description (optional), due date (optional)
-3. User fills in the title and optionally other fields
-4. User submits the form
-5. Optimistic UI: todo appears immediately in the list with a pending state
-6. API confirms creation; UI updates with actual server data
-7. On error: optimistic entry is removed, error toast is shown
+1. User enters title in the main input field at the top of the page
+2. Optionally sets due date and priority
+3. Clicks **"Add"** button
+4. Todo appears immediately in the Pending list (optimistic UI)
+5. API confirms creation; UI updates with server data
+6. On error: optimistic entry removed, error shown
 
 ### Read / List Todos
 1. On page load, todos are fetched via `GET /api/todos`
-2. Todos are displayed in a list, sorted by creation date descending
-3. Each todo card shows: title, description (truncated), due date, completion status, priority badge
+2. Todos display in three sections:
+   - **Overdue** — past due date, not completed (red background, ⚠️ icon)
+   - **Pending** — future/no due date, not completed
+   - **Completed** — marked as done
+3. Sort order within each section: Priority (High→Medium→Low) → Due date → Created date
 
 ### Update Todo
-1. User clicks on a todo card or an edit icon
-2. An edit form/modal pre-populated with current values is shown
-3. User modifies fields and submits
-4. Optimistic UI: list updates immediately
-5. API confirms update; UI syncs with server response
-6. On error: original values are restored, error toast is shown
+1. User clicks **"Edit"** button on a todo card
+2. Edit modal opens pre-filled with current values
+3. User modifies fields and clicks **"Update"**
+4. Modal closes; list reflects changes immediately
+5. On error: original values restored
 
 ### Delete Todo
-1. User clicks delete icon on a todo card
-2. A confirmation dialog appears: "Are you sure you want to delete this todo?"
-3. User confirms
-4. Optimistic UI: todo is removed from list immediately
-5. API confirms deletion
-6. On error: todo is restored, error toast is shown
+1. User clicks **"Delete"** button (red) on a todo card
+2. Todo immediately deleted — no confirmation dialog
+3. Subtasks, tag associations, and reminders cascade-deleted
 
 ### Toggle Completion
-1. User clicks the checkbox on a todo card
-2. Optimistic UI: checkbox toggles and visual style updates (strikethrough text)
-3. API call `PATCH /api/todos/[id]` with `{ completed: true/false }`
-4. Timestamp `completedAt` is set/cleared accordingly
+1. User clicks checkbox on a todo card
+2. Checkbox toggles; todo moves between sections (Pending ↔ Completed, or Overdue ↔ Completed)
+3. `completed_at` timestamp set/cleared via API
 
 ---
 
@@ -66,15 +63,19 @@ Core create, read, update, and delete functionality for todos. This is the found
 
 ```sql
 CREATE TABLE todos (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  title       TEXT NOT NULL,
-  description TEXT,
-  completed   INTEGER NOT NULL DEFAULT 0,  -- 0 = false, 1 = true
-  due_date    TEXT,                         -- ISO 8601 in SGT
-  priority    TEXT NOT NULL DEFAULT 'medium', -- 'high' | 'medium' | 'low'
-  created_at  TEXT NOT NULL,               -- ISO 8601 UTC
-  updated_at  TEXT NOT NULL,               -- ISO 8601 UTC
-  completed_at TEXT                        -- ISO 8601 UTC, nullable
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id               INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title                 TEXT NOT NULL,
+  completed             INTEGER NOT NULL DEFAULT 0,  -- 0 = false, 1 = true
+  due_date              TEXT,                         -- ISO 8601 in SGT
+  priority              TEXT NOT NULL DEFAULT 'medium', -- 'high' | 'medium' | 'low'
+  is_recurring          INTEGER NOT NULL DEFAULT 0,
+  recurrence_pattern    TEXT,                         -- 'daily'|'weekly'|'monthly'|'yearly'
+  reminder_minutes      INTEGER,                      -- minutes before due date
+  last_notification_sent TEXT,                        -- ISO 8601 UTC
+  created_at            TEXT NOT NULL,               -- ISO 8601 UTC
+  updated_at            TEXT NOT NULL,               -- ISO 8601 UTC
+  completed_at          TEXT                         -- ISO 8601 UTC, nullable
 );
 ```
 
@@ -82,33 +83,27 @@ CREATE TABLE todos (
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/todos` | List all todos (with optional filters) |
+| GET | `/api/todos` | List all todos for authenticated user |
 | POST | `/api/todos` | Create a new todo |
-| GET | `/api/todos/[id]` | Get a single todo |
 | PUT | `/api/todos/[id]` | Full update of a todo |
-| PATCH | `/api/todos/[id]` | Partial update (e.g., toggle complete) |
 | DELETE | `/api/todos/[id]` | Delete a todo |
 
 #### GET /api/todos
-Query parameters:
-- `completed` — `true` | `false` (filter by completion)
-- `priority` — `high` | `medium` | `low`
-- `search` — text search on title and description
-
-Response:
+- Requires session authentication
+- Returns todos owned by `session.userId`
+- Response:
 ```json
 {
   "todos": [
     {
       "id": 1,
       "title": "Buy groceries",
-      "description": "Milk, bread, eggs",
       "completed": false,
-      "dueDate": "2025-11-15T00:00:00+08:00",
+      "due_date": "2025-11-15T00:00:00+08:00",
       "priority": "medium",
-      "createdAt": "2025-11-11T10:00:00+08:00",
-      "updatedAt": "2025-11-11T10:00:00+08:00",
-      "completedAt": null
+      "created_at": "2025-11-11T10:00:00+08:00",
+      "updated_at": "2025-11-11T10:00:00+08:00",
+      "completed_at": null
     }
   ]
 }
@@ -119,74 +114,77 @@ Request body:
 ```json
 {
   "title": "Buy groceries",
-  "description": "Milk, bread, eggs",
-  "dueDate": "2025-11-15",
+  "due_date": "2025-11-15T00:00:00",
   "priority": "medium"
 }
 ```
-
 Response: `201 Created` with created todo object.
 
 #### PUT /api/todos/[id]
-Request body: same as POST (all fields required).
-Response: `200 OK` with updated todo object.
-
-#### PATCH /api/todos/[id]
-Request body: partial fields (e.g., `{ "completed": true }`).
-Response: `200 OK` with updated todo object.
+Request body: all updatable fields (title, due_date, priority, completed, is_recurring, recurrence_pattern, reminder_minutes).
+Response: `200 OK` with updated todo. If `completed: true` and `is_recurring: true`, also creates next instance.
 
 #### DELETE /api/todos/[id]
 Response: `204 No Content`
 
+### API Route Pattern (Next.js 16)
+
+```typescript
+// app/api/todos/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { getSession } from '@/lib/auth';
+import { todoDB } from '@/lib/db';
+
+export async function GET(request: NextRequest) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+  const todos = todoDB.getByUserId(session.userId);
+  return NextResponse.json({ todos });
+}
+
+export async function POST(request: NextRequest) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+  const body = await request.json();
+  // validate body...
+  const todo = todoDB.create({ ...body, user_id: session.userId });
+  return NextResponse.json(todo, { status: 201 });
+}
+```
+
 ### TypeScript Types
 
 ```typescript
-// types/todo.ts
+// Defined in lib/db.ts
+export type Priority = 'high' | 'medium' | 'low';
+export type RecurrencePattern = 'daily' | 'weekly' | 'monthly' | 'yearly';
+
 export interface Todo {
   id: number;
+  user_id: number;
   title: string;
-  description: string | null;
   completed: boolean;
-  dueDate: string | null;       // ISO 8601 with SGT offset
-  priority: 'high' | 'medium' | 'low';
-  createdAt: string;            // ISO 8601 UTC
-  updatedAt: string;            // ISO 8601 UTC
-  completedAt: string | null;   // ISO 8601 UTC
+  due_date: string | null;        // ISO 8601 with SGT offset
+  priority: Priority;
+  is_recurring: boolean;
+  recurrence_pattern: RecurrencePattern | null;
+  reminder_minutes: number | null;
+  last_notification_sent: string | null;
+  created_at: string;             // ISO 8601 UTC
+  updated_at: string;             // ISO 8601 UTC
+  completed_at: string | null;    // ISO 8601 UTC
 }
-
-export type CreateTodoInput = Pick<Todo, 'title'> &
-  Partial<Pick<Todo, 'description' | 'dueDate' | 'priority'>>;
-
-export type UpdateTodoInput = Partial<
-  Pick<Todo, 'title' | 'description' | 'dueDate' | 'priority' | 'completed'>
->;
 ```
 
 ### Timezone Handling
 
-All dates are stored as UTC ISO 8601 strings in the database. Display is converted to Singapore time (UTC+8).
+All dates stored as UTC ISO 8601 in the database. Display converted to SGT (UTC+8) using `lib/timezone.ts`:
 
 ```typescript
-// lib/timezone.ts
-import { toZonedTime, fromZonedTime, format } from 'date-fns-tz';
+import { getSingaporeNow, formatSingaporeDate } from '@/lib/timezone';
 
-const SGT = 'Asia/Singapore';
-
-export function toSGT(date: Date | string): Date {
-  return toZonedTime(new Date(date), SGT);
-}
-
-export function fromSGT(date: Date | string): Date {
-  return fromZonedTime(new Date(date), SGT);
-}
-
-export function formatSGT(date: Date | string, fmt: string): string {
-  return format(toZonedTime(new Date(date), SGT), fmt, { timeZone: SGT });
-}
-
-export function nowSGT(): string {
-  return new Date().toISOString();
-}
+// ALWAYS use getSingaporeNow() instead of new Date()
+const now = getSingaporeNow();
 ```
 
 ### Validation Rules
@@ -194,37 +192,48 @@ export function nowSGT(): string {
 | Field | Rules |
 |-------|-------|
 | title | Required, 1–255 characters, trimmed, non-empty after trim |
-| description | Optional, max 2000 characters |
-| dueDate | Optional, valid ISO date string, must not be in the past (on create) |
-| priority | Optional, must be one of `'high'`, `'medium'`, `'low'`, defaults to `'medium'` |
+| due_date | Optional, valid ISO date string |
+| priority | Optional, one of `'high'`, `'medium'`, `'low'`, defaults to `'medium'` |
 
 ---
 
 ## UI Components
 
-### TodoList (Client Component — `app/page.tsx`)
-```tsx
-// Renders the full list of todos
-// Props: todos: Todo[], onToggle, onDelete, onEdit
-```
+### Todo Form (top of `app/page.tsx`)
+- Text input for title (required)
+- Date-time picker (optional)
+- Priority dropdown (High/Medium/Low, default Medium)
+- "Add" button
+- "💾 Save as Template" button (appears when title is non-empty)
+- "Use Template" dropdown (if templates exist)
 
-### TodoCard
-```tsx
-// Individual todo card
-// Shows: checkbox, title (strikethrough if completed), due date badge, priority badge, action buttons
-```
+### Todo Card (within each section)
+- Checkbox (toggle completion)
+- Title text (strikethrough when completed)
+- Priority badge (color-coded)
+- Due date display (color/urgency-coded)
+- Recurrence badge (🔄 if recurring)
+- Reminder badge (🔔 if reminder set)
+- Tag pills (if any tags)
+- Progress bar (if subtasks exist)
+- "▶ Subtasks" / "▼ Subtasks" toggle button
+- "Edit" button (blue)
+- "Delete" button (red)
 
-### TodoForm (Create/Edit Modal)
-```tsx
-// Controlled form with: title input, description textarea, date picker, priority select
-// Validation on submit; disables submit button while loading
-```
+### Edit Modal
+- Pre-filled fields: title, due_date, priority, is_recurring, recurrence_pattern, reminder_minutes, tags
+- "Update" button
+- "Cancel" button
 
-### DeleteConfirmDialog
-```tsx
-// Confirmation modal before deletion
-// Shows todo title so user knows what they are deleting
-```
+### Due Date Color Coding
+
+| Time Until Due | Color |
+|----------------|-------|
+| Overdue | Red |
+| < 1 hour | Red |
+| < 24 hours | Orange |
+| < 7 days | Yellow |
+| 7+ days | Blue |
 
 ---
 
@@ -233,31 +242,30 @@ export function nowSGT(): string {
 | Scenario | Handling |
 |----------|----------|
 | Title is only whitespace | Trimmed to empty, validation rejects with "Title is required" |
-| Due date in the past (on create) | Show warning but allow — user may be backfilling historical tasks |
-| Deleting a todo with subtasks | Cascade delete all subtasks (see PRP 05) |
-| Concurrent edits from two browser tabs | Last write wins; `updatedAt` timestamp helps detect staleness |
-| Network failure during create | Optimistic entry is rolled back; toast: "Failed to create todo, please retry" |
+| Deleting a todo with subtasks | CASCADE delete all subtasks |
 | Empty todo list | Show empty state: "No todos yet — add your first task!" |
-| Very long title (> 255 chars) | Frontend caps input at 255; API returns 400 if exceeded |
+| Very long title (> 255 chars) | Frontend caps input at 255; API returns 400 |
 | Special characters in title | Stored as-is; escaped when rendered to prevent XSS |
+| params in Next.js 16 | Always `const { id } = await params` (params is a Promise) |
 
 ---
 
 ## Acceptance Criteria
 
 - [ ] User can create a todo with only a title
-- [ ] User can create a todo with title, description, due date, and priority
+- [ ] User can create a todo with title, due date, and priority
 - [ ] Form validation prevents empty title submission
 - [ ] Created todo appears in the list without full page reload
 - [ ] User can toggle a todo's completed status via checkbox
-- [ ] Completed todos are visually distinguished (e.g., strikethrough, muted color)
-- [ ] User can edit any field of an existing todo
-- [ ] User can delete a todo via confirmation dialog
+- [ ] Completed todos move to the Completed section
+- [ ] User can edit any field of an existing todo via edit modal
+- [ ] User can delete a todo (immediately, no confirmation)
 - [ ] Deleted todo is removed from the list without page reload
+- [ ] Todos sorted: High → Medium → Low, then by due date
+- [ ] Overdue todos appear in red Overdue section with ⚠️
 - [ ] All timestamps display in Singapore time (SGT / UTC+8)
 - [ ] API returns proper HTTP status codes (201, 200, 204, 400, 404)
-- [ ] API returns JSON error messages on 400/404 with `{ error: string }`
-- [ ] Database operations are synchronous (no async/await with better-sqlite3)
+- [ ] All DB operations are synchronous (better-sqlite3, no async/await)
 
 ---
 
@@ -266,16 +274,15 @@ export function nowSGT(): string {
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/todo-crud.spec.ts
-
-test('create a todo with title only', async ({ page }) => { /* ... */ });
-test('create a todo with all fields', async ({ page }) => { /* ... */ });
-test('validation: empty title shows error', async ({ page }) => { /* ... */ });
-test('toggle todo completion', async ({ page }) => { /* ... */ });
-test('edit todo title', async ({ page }) => { /* ... */ });
-test('delete todo with confirmation', async ({ page }) => { /* ... */ });
-test('cancel delete does not remove todo', async ({ page }) => { /* ... */ });
-test('empty state shown when no todos', async ({ page }) => { /* ... */ });
+// tests/02-todo-crud.spec.ts
+test('create a todo with title only');
+test('create a todo with due date and priority');
+test('validation: empty title shows error');
+test('toggle todo completion moves to Completed section');
+test('edit todo title via edit modal');
+test('delete todo removes it from list immediately');
+test('overdue todo appears in Overdue section');
+test('empty state shown when no todos');
 ```
 
 ### Unit Tests
@@ -284,25 +291,16 @@ test('empty state shown when no todos', async ({ page }) => { /* ... */ });
 // tests/unit/todo-validation.test.ts
 test('rejects empty title');
 test('rejects title > 255 chars');
+test('trims whitespace from title');
 test('accepts valid priority values');
 test('rejects invalid priority values');
-test('trims whitespace from title');
 ```
 
 ---
 
 ## Out of Scope
 
-- Drag-and-drop reordering (not in this PRP)
+- Drag-and-drop reordering
 - Bulk delete/complete operations
 - Undo/redo functionality
-- Real-time sync between browser tabs (WebSockets)
-
----
-
-## Success Metrics
-
-- Todo creation completes in < 300 ms (API round trip)
-- Zero XSS vulnerabilities in title/description rendering
-- 100% of CRUD operations covered by E2E tests
-- Optimistic UI updates feel instantaneous (< 16 ms visual response)
+- Real-time sync between browser tabs

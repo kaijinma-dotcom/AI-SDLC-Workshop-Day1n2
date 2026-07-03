@@ -2,7 +2,7 @@
 
 ## Feature Overview
 
-A browser-based notification system that reminds users of upcoming todos. Users can configure a reminder lead time (from 15 minutes to 1 week before a todo's due date). The system uses a client-side polling mechanism to check for due reminders, requests the Web Notifications API permission, and prevents duplicate notifications from firing.
+A browser-based notification system that reminds users of upcoming todos. Users configure a reminder lead time (15 minutes to 1 week before a todo's due date). The system uses client-side polling every 60 seconds, requests Web Notifications API permission, and prevents duplicate notifications using `last_notification_sent` tracking.
 
 All time calculations use Singapore timezone (Asia/Singapore / UTC+8).
 
@@ -14,39 +14,38 @@ All time calculations use Singapore timezone (Asia/Singapore / UTC+8).
 |----|---------|-------------|-----------|
 | US-01 | User | Enable a reminder for a specific todo | I don't forget upcoming deadlines |
 | US-02 | User | Choose how far in advance I'm reminded | I can control how much notice I get |
-| US-03 | User | Receive a browser notification when a reminder fires | I'm alerted even if I'm not looking at the page |
-| US-04 | User | Not receive duplicate notifications for the same reminder | I'm not spammed by repeated alerts |
-| US-05 | User | See which todos have reminders configured | I can manage my notification preferences |
+| US-03 | User | Receive a browser notification when a reminder fires | I'm alerted even if not looking at the page |
+| US-04 | User | Not receive duplicate notifications | I'm not spammed by repeated alerts |
+| US-05 | User | See which todos have reminders | I can manage my notification preferences |
 
 ---
 
 ## User Flow
 
-### Enabling a Reminder
-1. User opens the "Add Todo" or "Edit Todo" form
-2. A "Reminder" toggle/section is visible
-3. User enables the reminder
-4. A dropdown appears with lead time options: 15 min, 30 min, 1 hour, 2 hours, 1 day, 2 days, 1 week
-5. User selects a lead time
-6. On save, the reminder target time is calculated: `dueDate - leadTime` (in SGT)
-7. The todo is saved with reminder metadata
+### Enabling Notifications (Global)
+1. User clicks **"🔔 Enable Notifications"** button (orange, top-right)
+2. Browser prompts for notification permission
+3. If granted: button turns green → "🔔 Notifications On"
+4. If denied: banner shown: "Reminders are blocked. Enable notifications in browser settings."
 
-### Browser Permission Flow
-1. On first reminder creation (or on page load if reminders exist), request Notifications permission
-2. If user denies: show a banner "Notifications are blocked. Enable them in browser settings to receive reminders."
-3. If user grants: proceed silently
+### Setting a Reminder on a Todo
+1. Open "Add Todo" or "Edit Todo" form
+2. **Reminder dropdown** is visible (disabled if no due date set)
+3. Select lead time: 15 min / 30 min / 1 hour / 2 hours / 1 day / 2 days / 1 week
+4. Save todo; `reminder_minutes` stored in DB
 
 ### Reminder Firing (Polling Mechanism)
-1. On page load, start a polling interval (every 60 seconds)
-2. Each tick: `GET /api/todos/reminders/due` — returns reminders whose `reminderAt <= NOW()` and `fired = false` and `completed = false`
+1. On page load, polling starts (60-second interval)
+2. Each tick: `GET /api/notifications/check` — returns todos where reminder time has passed, not yet notified, not completed
 3. For each due reminder:
-   a. Show browser notification: title = todo title, body = "Due at [time in SGT]"
-   b. Call `PATCH /api/todos/[id]/reminder` with `{ fired: true }` to mark as notified
-4. Stop polling when user navigates away (cleanup on unmount)
+   - Show browser notification: title = todo title, body = "Due at [SGT time]"
+   - Call API to mark `last_notification_sent = NOW()` to prevent duplicates
+4. Polling stops on page unmount (cleanup)
 
-### Dismissing / Managing Reminders
-1. User can disable a reminder via the edit form (toggle off)
-2. Reminder metadata is cleared; no further notifications
+### Removing a Reminder
+1. User opens edit modal
+2. Changes Reminder dropdown to "None"
+3. Saves; `reminder_minutes = null` cleared in DB
 
 ---
 
@@ -55,11 +54,9 @@ All time calculations use Singapore timezone (Asia/Singapore / UTC+8).
 ### Database Schema
 
 ```sql
--- Add reminder columns to todos table
-ALTER TABLE todos ADD COLUMN reminder_enabled  INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE todos ADD COLUMN reminder_lead_time TEXT;   -- '15m' | '30m' | '1h' | '2h' | '1d' | '2d' | '1w'
-ALTER TABLE todos ADD COLUMN reminder_at       TEXT;    -- ISO 8601 UTC timestamp when notification should fire
-ALTER TABLE todos ADD COLUMN reminder_fired    INTEGER NOT NULL DEFAULT 0;
+-- Columns on todos table (see PRP 01 for full schema)
+reminder_minutes       INTEGER,    -- minutes before due date (15, 30, 60, 120, 1440, 2880, 10080)
+last_notification_sent TEXT        -- ISO 8601 UTC; prevents duplicate notifications
 ```
 
 ### Lead Time Options
@@ -68,20 +65,20 @@ ALTER TABLE todos ADD COLUMN reminder_fired    INTEGER NOT NULL DEFAULT 0;
 // lib/reminders.ts
 export type ReminderLeadTime = '15m' | '30m' | '1h' | '2h' | '1d' | '2d' | '1w';
 
-export const LEAD_TIME_CONFIG: Record<ReminderLeadTime, { label: string; minutes: number }> = {
-  '15m': { label: '15 minutes before', minutes: 15 },
-  '30m': { label: '30 minutes before', minutes: 30 },
-  '1h':  { label: '1 hour before',     minutes: 60 },
-  '2h':  { label: '2 hours before',    minutes: 120 },
-  '1d':  { label: '1 day before',      minutes: 1440 },
-  '2d':  { label: '2 days before',     minutes: 2880 },
-  '1w':  { label: '1 week before',     minutes: 10080 },
-};
+export const LEAD_TIME_OPTIONS: Array<{ value: number | null; label: string }> = [
+  { value: null,  label: 'None' },
+  { value: 15,    label: '15 minutes before' },
+  { value: 30,    label: '30 minutes before' },
+  { value: 60,    label: '1 hour before' },
+  { value: 120,   label: '2 hours before' },
+  { value: 1440,  label: '1 day before' },
+  { value: 2880,  label: '2 days before' },
+  { value: 10080, label: '1 week before' },
+];
 
-export function calculateReminderAt(dueDate: string, leadTime: ReminderLeadTime): string {
+export function getReminderAt(dueDate: string, reminderMinutes: number): Date {
   const due = new Date(dueDate);
-  const { minutes } = LEAD_TIME_CONFIG[leadTime];
-  return new Date(due.getTime() - minutes * 60 * 1000).toISOString();
+  return new Date(due.getTime() - reminderMinutes * 60 * 1000);
 }
 ```
 
@@ -89,114 +86,99 @@ export function calculateReminderAt(dueDate: string, leadTime: ReminderLeadTime)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/todos/reminders/due` | Returns unfired, non-completed todos with `reminderAt <= NOW()` |
-| PATCH | `/api/todos/[id]/reminder` | Mark reminder as fired |
+| GET | `/api/notifications/check` | Returns todos with due reminders (not yet sent, not completed) |
 
-#### GET /api/todos/reminders/due
+#### GET /api/notifications/check
 
 ```typescript
-// app/api/todos/reminders/due/route.ts
-// Query: SELECT * FROM todos WHERE reminder_enabled = 1 AND reminder_fired = 0
-//          AND completed = 0 AND reminder_at <= datetime('now')
+// app/api/notifications/check/route.ts
 export async function GET() {
-  const db = getDb();
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
   const now = new Date().toISOString();
-  const reminders = db
-    .prepare(
-      `SELECT * FROM todos
-       WHERE reminder_enabled = 1
-         AND reminder_fired = 0
-         AND completed = 0
-         AND reminder_at <= ?`
-    )
-    .all(now);
-  return Response.json({ reminders });
+  // Returns todos where reminder is due and hasn't been sent yet
+  const todos = todoDB.getDueReminders(session.userId, now);
+  return NextResponse.json({ todos });
 }
 ```
 
-#### PATCH /api/todos/[id]/reminder
+```sql
+-- todoDB.getDueReminders query
+SELECT * FROM todos
+WHERE user_id = ?
+  AND completed = 0
+  AND reminder_minutes IS NOT NULL
+  AND due_date IS NOT NULL
+  AND datetime(due_date, '-' || reminder_minutes || ' minutes') <= datetime(?)
+  AND (last_notification_sent IS NULL
+       OR last_notification_sent < datetime(due_date, '-' || reminder_minutes || ' minutes'))
+```
 
-Request body: `{ "fired": true }`
-Response: `200 OK` with updated todo.
+After showing notifications, client calls `PUT /api/todos/[id]` with `{ last_notification_sent: now }`.
 
-### Client-Side Polling
+### Client-Side Polling Hook
 
 ```typescript
-// hooks/useReminderPolling.ts
-import { useEffect, useRef } from 'react';
-import { formatSGT } from '@/lib/timezone';
+// lib/hooks/useNotifications.ts
+import { useEffect, useRef, useCallback } from 'react';
+import { formatSingaporeDate } from '@/lib/timezone';
 
-export function useReminderPolling(enabled: boolean) {
+export function useNotifications(enabled: boolean) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const checkReminders = useCallback(async () => {
+    if (Notification.permission !== 'granted') return;
+    const res = await fetch('/api/notifications/check');
+    if (!res.ok) return;
+    const { todos } = await res.json();
+    for (const todo of todos) {
+      new Notification(todo.title, {
+        body: `Due at ${formatSingaporeDate(todo.due_date, 'h:mm a, d MMM yyyy')}`,
+        icon: '/favicon.ico',
+      });
+      await fetch(`/api/todos/${todo.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ last_notification_sent: new Date().toISOString() }),
+      });
+    }
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
-
-    async function checkReminders() {
-      const res = await fetch('/api/todos/reminders/due');
-      const { reminders } = await res.json();
-
-      for (const reminder of reminders) {
-        // Show notification
-        if (Notification.permission === 'granted') {
-          new Notification(reminder.title, {
-            body: `Due at ${formatSGT(reminder.due_date, 'h:mm a, d MMM yyyy')}`,
-            icon: '/favicon.ico',
-          });
-        }
-        // Mark as fired
-        await fetch(`/api/todos/${reminder.id}/reminder`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fired: true }),
-        });
-      }
-    }
-
-    checkReminders(); // immediate check on mount
+    checkReminders();
     intervalRef.current = setInterval(checkReminders, 60_000);
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [enabled]);
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [enabled, checkReminders]);
 }
 ```
 
-### Notification Permission Request
+### Notification Permission Helper
 
 ```typescript
 // lib/notifications.ts
-export async function requestNotificationPermission(): Promise<boolean> {
-  if (!('Notification' in window)) return false;
-  if (Notification.permission === 'granted') return true;
-  if (Notification.permission === 'denied') return false;
-  const result = await Notification.requestPermission();
-  return result === 'granted';
+export async function requestNotificationPermission(): Promise<NotificationPermission> {
+  if (!('Notification' in window)) return 'denied';
+  if (Notification.permission !== 'default') return Notification.permission;
+  return Notification.requestPermission();
 }
 ```
 
 ### TypeScript Types
 
 ```typescript
-export type ReminderLeadTime = '15m' | '30m' | '1h' | '2h' | '1d' | '2d' | '1w';
-
-export interface Todo {
-  // ...existing fields...
-  reminderEnabled: boolean;
-  reminderLeadTime: ReminderLeadTime | null;
-  reminderAt: string | null;      // UTC ISO 8601
-  reminderFired: boolean;
-}
+// Part of Todo interface in lib/db.ts
+reminder_minutes: number | null;       // e.g., 60 for "1 hour before"
+last_notification_sent: string | null; // ISO 8601 UTC
 ```
 
-### Singapore Timezone Calculations
-
-Reminder display times are always shown in SGT:
+### Singapore Timezone for Notification Body
 
 ```typescript
-// Example: due at 2025-11-15T09:00:00+08:00 with 1-day reminder
-// reminderAt = 2025-11-14T01:00:00Z (= 2025-11-14T09:00:00+08:00)
+// Notification body example:
+// Todo due at 2025-11-15T09:00:00+08:00 with 1-day reminder:
+// reminderAt = 2025-11-14T09:00:00+08:00
 // Notification body: "Due at 9:00 AM, 15 Nov 2025"
 ```
 
@@ -204,27 +186,32 @@ Reminder display times are always shown in SGT:
 
 ## UI Components
 
-### ReminderSection (within TodoForm)
+### "Enable Notifications" Button (top of page)
 ```tsx
-// Toggle + lead time selector
-// Props: enabled: boolean, leadTime: ReminderLeadTime | null
-//        onChange: (enabled: boolean, leadTime: ReminderLeadTime | null) => void
-// Shows lead time select only when enabled = true
-// Requires dueDate to be set — shows warning if not
+// Orange when permission not granted: "🔔 Enable Notifications"
+// Green when granted: "🔔 Notifications On"
+// Calls requestNotificationPermission() on click
 ```
 
-### NotificationPermissionBanner
+### Reminder Dropdown (in todo form and edit modal)
+```tsx
+// <select> with LEAD_TIME_OPTIONS
+// Disabled when no due_date is set; shows tooltip: "Set a due date first"
+// Default: "None"
+```
+
+### Reminder Badge (on todo card)
+```tsx
+// Small 🔔 badge shown when reminder_minutes is set
+// Text: abbreviated time (e.g., "🔔 1h", "🔔 1d", "🔔 1w")
+// Positioned next to recurrence badge
+```
+
+### Notification Permission Banner
 ```tsx
 // Shown when Notification.permission === 'denied'
 // Message: "Reminders are blocked. Enable notifications in your browser settings."
-// Has a dismiss button (persisted in localStorage)
-```
-
-### ReminderBadge
-```tsx
-// Small bell icon shown on todo cards with active reminders
-// Props: reminderLeadTime: ReminderLeadTime, reminderAt: string
-// Tooltip: "Reminder: 1 day before due"
+// Dismissible (stores dismissal in localStorage)
 ```
 
 ---
@@ -233,32 +220,29 @@ Reminder display times are always shown in SGT:
 
 | Scenario | Handling |
 |----------|----------|
-| Todo has no due date but reminder is enabled | Validation error: "Reminder requires a due date" |
-| Due date is in the past | Reminder at would also be past — show warning; allow save but reminder fires immediately or is skipped |
-| User denies notification permission | Show banner; polling still runs but notifications are suppressed |
-| Browser tab is closed during polling | Polling stops; missed reminders shown on next page load |
-| Reminder fires but todo already completed externally | `completed = 0` check prevents firing |
-| Multiple tabs open | Each tab polls independently — `reminder_fired = 1` prevents duplicate notifications |
-| Lead time > time until due date | `reminderAt` would be in the past — warning shown; reminder may fire immediately |
-| `Notification` API not supported | Feature degraded gracefully; no crash, no notifications |
+| Todo has no due date but reminder selected | Reminder dropdown disabled; cannot save with reminder but no due date |
+| Browser doesn't support Notifications API | Feature degrades gracefully; no crash; notifications silently skipped |
+| User denies notification permission | Banner shown; polling still runs but notifications suppressed |
+| Multiple tabs open | `last_notification_sent` check prevents duplicate notifications across tabs |
+| Tab closed during polling | Polling stops; on next load, missed reminders checked immediately |
+| Reminder at is in the past (due to late page load) | Fires immediately on first poll check |
+| Todo completed before reminder fires | `completed = 0` check prevents notification |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] Reminder toggle appears in the todo form
-- [ ] Lead time dropdown shows all 7 options (15m to 1w)
-- [ ] Reminder requires a due date — validation error shown if not set
-- [ ] `reminderAt` is calculated correctly as `dueDate - leadTime`
+- [ ] "🔔 Enable Notifications" button visible on page (orange → green after granting)
+- [ ] Reminder dropdown appears in create/edit forms
+- [ ] Reminder dropdown disabled when no due date is set
+- [ ] All 7 lead time options available (None, 15m, 30m, 1h, 2h, 1d, 2d, 1w)
+- [ ] Reminder badge (🔔 + abbreviated time) visible on todos with active reminders
+- [ ] Browser notification fires within 60 seconds of reminder time
+- [ ] Notification title = todo title; body = "Due at [time in SGT]"
+- [ ] `last_notification_sent` set after notification; duplicate notifications prevented
+- [ ] Permission denied banner shown when notifications blocked
+- [ ] Reminder removed by selecting "None" in edit form
 - [ ] All times displayed in Singapore timezone
-- [ ] Browser notification fires within 60 seconds of `reminderAt`
-- [ ] Notification title matches todo title
-- [ ] Notification body shows due time in SGT format
-- [ ] `reminderFired` is set to true after notification fires
-- [ ] Duplicate notifications are prevented across tabs and page reloads
-- [ ] Permission denied banner is shown when notifications are blocked
-- [ ] Reminder can be disabled via edit form
-- [ ] Bell icon badge is visible on todos with active reminders
 
 ---
 
@@ -267,40 +251,31 @@ Reminder display times are always shown in SGT:
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/reminders.spec.ts
-
-test('enable reminder with 1-day lead time', async ({ page }) => { /* ... */ });
-test('reminder requires due date - validation error shown', async ({ page }) => { /* ... */ });
-test('reminder bell badge visible on todo card', async ({ page }) => { /* ... */ });
-test('disable reminder via edit form removes badge', async ({ page }) => { /* ... */ });
-// Note: Notification firing requires mocking Notification API and time
+// tests/04-reminders.spec.ts
+test('reminder dropdown disabled without due date');
+test('reminder badge 🔔 visible after setting reminder');
+test('reminder badge shows correct abbreviated time');
+test('removing reminder clears badge');
+test('notification permission button changes state after grant');
 ```
 
 ### Unit Tests
 
 ```typescript
 // tests/unit/reminders.test.ts
-test('calculateReminderAt: 15 minutes before');
-test('calculateReminderAt: 1 day before');
-test('calculateReminderAt: 1 week before');
-test('calculateReminderAt: result is in UTC ISO format');
+test('getReminderAt: 15 minutes before due date');
+test('getReminderAt: 1 day before due date');
+test('getReminderAt: 1 week before due date');
+test('getReminderAt: result is before due date');
+test('LEAD_TIME_OPTIONS contains all 7 options plus None');
 ```
 
 ---
 
 ## Out of Scope
 
-- Push notifications (server-sent)
+- Push notifications (server-sent events / service workers)
 - Email or SMS reminders
-- Recurring reminder snooze functionality
-- Per-user notification preferences (beyond per-todo settings)
+- Snooze functionality
 - Sound/vibration customization
-
----
-
-## Success Metrics
-
-- Notification fires within 60 seconds of `reminderAt`
-- Zero duplicate notifications in multi-tab scenario
-- `reminderAt` calculation is accurate to the second
-- Graceful degradation when Notification API is unavailable
+- Per-user global notification preferences (beyond per-todo settings)

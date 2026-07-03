@@ -2,7 +2,7 @@
 
 ## Feature Overview
 
-A color-coded label system that allows users to organize todos by topic or category. Tags have a name and a color, and a todo can have multiple tags (many-to-many relationship). Users can create, edit, and delete tags via a dedicated tag management interface, and filter the todo list by one or more tags.
+Custom color-coded labels that users can create and assign to todos for categorization and filtering. Tags use a many-to-many relationship (todos ↔ tags via a junction table). Each user manages their own tag library. Tags can be filtered in the todo list, and deleting a tag removes it from all associated todos via CASCADE.
 
 ---
 
@@ -10,53 +10,45 @@ A color-coded label system that allows users to organize todos by topic or categ
 
 | ID | As a... | I want to... | So that... |
 |----|---------|-------------|-----------|
-| US-01 | User | Create tags with a name and color | I can categorize my todos by topic |
-| US-02 | User | Assign multiple tags to a todo | I can describe a todo with multiple categories |
-| US-03 | User | See color-coded tag chips on each todo card | I can visually identify categories at a glance |
-| US-04 | User | Filter the todo list by tag | I can focus on a specific category of work |
-| US-05 | User | Edit a tag's name or color | I can update labels as my workflow evolves |
-| US-06 | User | Delete a tag | I can remove categories I no longer use |
+| US-01 | User | Create custom tags with names and colors | I can categorize todos by area or project |
+| US-02 | User | Assign multiple tags to a todo | I can classify todos under multiple categories |
+| US-03 | User | See color-coded tag pills on todo cards | I can instantly recognize categories at a glance |
+| US-04 | User | Filter todos by a specific tag | I can focus on one area of work |
+| US-05 | User | Edit or delete my tags | I can keep my tag library clean |
 
 ---
 
 ## User Flow
 
-### Creating a Tag
-1. User navigates to the "Tags" management section (accessible from settings or a sidebar link)
-2. User clicks "+ New Tag"
-3. A form appears: tag name (text input), color (color picker or preset swatches)
-4. User fills in name and picks a color
-5. Clicks "Create Tag"
-6. New tag appears in the tags list
+### Creating Tags
+1. Click **"+ Manage Tags"** button near the todo form
+2. Tag management modal opens
+3. Enter tag name and select a color (color picker or hex input)
+4. Click **"Create Tag"**
+5. Tag appears in the tag list and is available to assign
 
-### Assigning Tags to a Todo
-1. In the create/edit todo form, a "Tags" multi-select section is visible
-2. User clicks the field to open a dropdown of available tags (shown with color swatches)
-3. User clicks one or more tags to select them
-4. Selected tags appear as chips inside the field
-5. User can click an X on a chip to remove a tag selection
-6. On form save, the tag assignments are persisted
+### Assigning Tags to Todos (on create)
+1. After tags exist, tag pills appear below the todo form
+2. Click a tag pill to select it (colored background, checkmark)
+3. Click again to deselect (gray border, no checkmark)
+4. Multiple tags can be selected
+5. Create the todo — selected tags are saved
+
+### Assigning Tags (on edit)
+1. Open edit modal for a todo
+2. Tag selection pills visible in the modal
+3. Toggle tags on/off
+4. Click "Update" to save
 
 ### Filtering by Tag
-1. A tags filter area is shown above or in the sidebar of the todo list
-2. All existing tags are shown as clickable chips
-3. User clicks a tag to activate the filter
-4. The todo list shows only todos that have that tag
-5. Multiple tags can be selected (OR logic: todos with any of the selected tags are shown)
-6. User clicks an active tag chip to deselect it
+1. "All Tags" dropdown appears in the filter section (only if tags exist)
+2. Select a tag name to show only todos with that tag
+3. Combines with priority, search, date, and completion filters
+4. Select "All Tags" to clear
 
-### Editing a Tag
-1. User goes to tag management, clicks the edit icon on a tag
-2. An inline form or modal shows the current name and color
-3. User updates and saves
-4. All todo cards using this tag reflect the updated name/color immediately
-
-### Deleting a Tag
-1. User clicks the delete icon on a tag in management
-2. A confirmation dialog: "Delete tag '[name]'? It will be removed from all todos."
-3. User confirms
-4. Tag is removed from the database; junction rows are cascade-deleted
-5. Tag chips disappear from all affected todo cards
+### Managing Tags
+- **Edit**: Modify name and/or color; changes reflect on all todos using the tag
+- **Delete**: Removes tag from all todos (CASCADE via `todo_tags` junction table)
 
 ---
 
@@ -67,186 +59,161 @@ A color-coded label system that allows users to organize todos by topic or categ
 ```sql
 CREATE TABLE tags (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  name       TEXT NOT NULL UNIQUE,
-  color      TEXT NOT NULL DEFAULT '#6366f1', -- hex color string
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  color      TEXT NOT NULL DEFAULT '#3B82F6', -- hex color code
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  UNIQUE(user_id, name)  -- no duplicate names per user
 );
 
 CREATE TABLE todo_tags (
   todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
-  tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+  tag_id  INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
   PRIMARY KEY (todo_id, tag_id)
 );
 
+CREATE INDEX idx_tags_user_id ON tags(user_id);
 CREATE INDEX idx_todo_tags_todo_id ON todo_tags(todo_id);
-CREATE INDEX idx_todo_tags_tag_id  ON todo_tags(tag_id);
+CREATE INDEX idx_todo_tags_tag_id ON todo_tags(tag_id);
 ```
 
 ### API Endpoints
 
-#### Tag Management
-
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/tags` | List all tags |
+| GET | `/api/tags` | List all tags for authenticated user |
 | POST | `/api/tags` | Create a new tag |
-| PUT | `/api/tags/[id]` | Update a tag |
-| DELETE | `/api/tags/[id]` | Delete a tag |
-
-#### Todo Tags
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/todos/[todoId]/tags` | Get tags for a todo |
-| POST | `/api/todos/[todoId]/tags` | Add a tag to a todo |
-| DELETE | `/api/todos/[todoId]/tags/[tagId]` | Remove a tag from a todo |
-
-Or, tags are managed as part of the todo create/update:
-
-```json
-// POST /api/todos or PUT /api/todos/[id]
-{
-  "title": "...",
-  "tagIds": [1, 3, 5]
-}
-```
-
-On create/update, the API:
-1. Deletes existing `todo_tags` rows for the todo
-2. Inserts new rows for the provided `tagIds`
-
-#### GET /api/todos with tag filtering
-
-Query parameter: `?tagIds=1,3` — returns todos that have any of the specified tag IDs.
-
-```sql
-SELECT DISTINCT t.*
-FROM todos t
-JOIN todo_tags tt ON t.id = tt.todo_id
-WHERE tt.tag_id IN (1, 3)
-```
-
-### Response Format
+| PUT | `/api/tags/[id]` | Update tag name and/or color |
+| DELETE | `/api/tags/[id]` | Delete tag (and remove from all todos) |
+| POST | `/api/todos/[id]/tags` | Add tag(s) to a todo |
+| DELETE | `/api/todos/[id]/tags/[tagId]` | Remove a tag from a todo |
 
 #### GET /api/tags
-```json
-{
-  "tags": [
-    { "id": 1, "name": "Work", "color": "#3b82f6", "createdAt": "...", "updatedAt": "..." }
-  ]
-}
+
+```typescript
+// Response
+{ "tags": [{ "id": 1, "name": "Work", "color": "#3B82F6" }] }
 ```
 
-#### GET /api/todos (with tags included)
-```json
-{
-  "todos": [
-    {
-      "id": 1,
-      "title": "...",
-      "tags": [
-        { "id": 1, "name": "Work", "color": "#3b82f6" }
-      ]
-    }
-  ]
-}
+#### POST /api/tags
+
+```typescript
+// Request
+{ "name": "Work", "color": "#3B82F6" }
+// Response: 201 Created with tag object
+// Error: 409 Conflict if name already exists for user
 ```
 
-Tags are joined in the todos query:
-```sql
-SELECT t.*, GROUP_CONCAT(tg.id || ':' || tg.name || ':' || tg.color) AS tags_raw
-FROM todos t
-LEFT JOIN todo_tags tt ON t.id = tt.todo_id
-LEFT JOIN tags tg ON tt.tag_id = tg.id
-GROUP BY t.id
+#### POST /api/todos/[id]/tags
+
+```typescript
+// Request body: { "tagIds": [1, 2, 3] }
+// Replaces all current tags for the todo with the provided set
+// Response: 200 OK
 ```
 
-Then parse `tags_raw` in application code.
+### Database Operations (lib/db.ts)
+
+```typescript
+export const tagDB = {
+  getByUserId: (userId: number): Tag[] =>
+    db.prepare('SELECT * FROM tags WHERE user_id = ? ORDER BY name').all(userId) as Tag[],
+
+  getByTodoId: (todoId: number): Tag[] =>
+    db.prepare(`
+      SELECT t.* FROM tags t
+      JOIN todo_tags tt ON tt.tag_id = t.id
+      WHERE tt.todo_id = ?
+    `).all(todoId) as Tag[],
+
+  create: (data: { user_id: number; name: string; color: string }): Tag => {
+    const now = getSingaporeNow().toISOString();
+    const result = db.prepare(
+      'INSERT INTO tags (user_id, name, color, created_at) VALUES (?, ?, ?, ?)'
+    ).run(data.user_id, data.name.trim(), data.color, now);
+    return tagDB.getById(result.lastInsertRowid as number);
+  },
+
+  update: (id: number, data: { name?: string; color?: string }): Tag => {
+    if (data.name) db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(data.name.trim(), id);
+    if (data.color) db.prepare('UPDATE tags SET color = ? WHERE id = ?').run(data.color, id);
+    return tagDB.getById(id);
+  },
+
+  delete: (id: number): void => {
+    db.prepare('DELETE FROM tags WHERE id = ?').run(id);
+    // todo_tags rows cascade automatically via FK
+  },
+
+  setTodoTags: (todoId: number, tagIds: number[]): void => {
+    db.prepare('DELETE FROM todo_tags WHERE todo_id = ?').run(todoId);
+    const insert = db.prepare('INSERT INTO todo_tags (todo_id, tag_id) VALUES (?, ?)');
+    tagIds.forEach(tagId => insert.run(todoId, tagId));
+  },
+};
+```
 
 ### TypeScript Types
 
 ```typescript
-// types/tag.ts
+// lib/db.ts
 export interface Tag {
   id: number;
+  user_id: number;
   name: string;
-  color: string;      // hex color string, e.g. '#3b82f6'
-  createdAt: string;
-  updatedAt: string;
+  color: string;  // hex e.g. '#3B82F6'
+  created_at: string;
 }
 
-export type CreateTagInput = { name: string; color: string };
-export type UpdateTagInput = Partial<{ name: string; color: string }>;
-
-// Extend Todo type
-export interface Todo {
-  // ...existing fields...
-  tags: Pick<Tag, 'id' | 'name' | 'color'>[];
+// Extended type used on client
+export interface TodoWithTags extends Todo {
+  tags: Tag[];
 }
 ```
 
-### Validation Rules
+### Validation
 
 | Field | Rules |
 |-------|-------|
-| Tag name | Required, 1–50 characters, trimmed, unique (case-insensitive) |
-| Tag color | Required, valid hex color `#rrggbb` or `#rgb` format |
-| tagIds (on todo) | Array of integers; all IDs must exist in the `tags` table |
+| name | Required, 1–50 characters, trimmed, unique per user |
+| color | Required, valid hex color (`#RRGGBB`), default `#3B82F6` |
 
 ---
 
 ## UI Components
 
-### TagManager
+### Tag Management Modal (accessed via "+ Manage Tags")
 ```tsx
-// Full tag management page/section
-// Lists all tags with edit and delete actions
-// Contains the "New Tag" form inline or in a modal
+// Modal sections:
+// 1. Create tag: name input + color picker + hex input + "Create Tag" button
+// 2. Tag list: each row shows [ colored dot ] [ name ] [ Edit ] [ Delete ]
+// Default color: #3B82F6 (blue)
+// Dark mode fully supported
 ```
 
-### TagChip
+### Tag Pills (below todo form and in edit modal)
 ```tsx
-// Small pill-shaped chip showing tag name with the tag's background color
-// Props: tag: Pick<Tag, 'name' | 'color'>, onRemove?: () => void
-// When onRemove is provided, shows an X button
-interface TagChipProps {
-  tag: Pick<Tag, 'name' | 'color'>;
-  onRemove?: () => void;
-}
+// One pill per available tag
+// Unselected: white/gray background, gray border, gray text
+// Selected: tag's color background, white text, checkmark icon
+// Click to toggle selection
+// Multiple tags can be selected simultaneously
 ```
 
-### TagMultiSelect
+### Tag Pills on Todo Cards
 ```tsx
-// Multi-select dropdown for assigning tags to a todo
-// Props: availableTags: Tag[], selectedTagIds: number[]
-//        onChange: (tagIds: number[]) => void
-// Shows selected tags as chips; dropdown lists remaining tags
-interface TagMultiSelectProps {
-  availableTags: Tag[];
-  selectedTagIds: number[];
-  onChange: (tagIds: number[]) => void;
-}
+// Read-only colored pills on each todo card
+// White text on tag's color background
+// Rounded full shape
+// Positioned after priority/recurrence/reminder badges
+// Visible in all sections (Overdue, Pending, Completed)
 ```
 
-### TagFilter
+### Tag Filter Dropdown (above todo list)
 ```tsx
-// Tag chips above the todo list for filtering
-// Props: tags: Tag[], activeTagIds: number[]
-//        onToggle: (tagId: number) => void
-// Active tags have a highlighted/selected style
-interface TagFilterProps {
-  tags: Tag[];
-  activeTagIds: number[];
-  onToggle: (tagId: number) => void;
-}
-```
-
-### ColorPicker
-```tsx
-// A set of preset color swatches + optional hex input
-// Props: value: string, onChange: (color: string) => void
-// Preset colors: 10–15 accessible swatches covering major hues
+// Dropdown: "All Tags" + individual tag names
+// Only visible if at least one tag exists
+// Combines with all other filters (AND logic)
 ```
 
 ---
@@ -255,33 +222,30 @@ interface TagFilterProps {
 
 | Scenario | Handling |
 |----------|----------|
-| Tag name already exists (case-insensitive) | 409 Conflict: "Tag '[name]' already exists" |
-| Invalid hex color | 400 Bad Request: "Invalid color format. Use #rrggbb" |
-| Assigning non-existent tagId to todo | 400 Bad Request: "Tag [id] not found" |
-| Deleting a tag used by todos | Cascade via `ON DELETE CASCADE` on `todo_tags`; todo remains, tag chip disappears |
-| Filtering with multiple tags (OR) | `DISTINCT` query with `IN (...)` clause |
-| Todo with 0 tags | Tags array is empty `[]`; no chips rendered |
-| Long tag name (> 50 chars) | Frontend caps input; API returns 400 |
-| Tag color is not accessible | Application provides preset accessible swatches; custom hex input is user's responsibility |
+| Duplicate tag name for same user | 409 Conflict: "Tag name already exists" |
+| Invalid hex color | Default to `#3B82F6`; or validate and return 400 |
+| Deleting a tag | CASCADE removes from `todo_tags`; tag pills update across all affected todos |
+| Editing a tag color | Update `tags.color`; color reflects on all todo cards with that tag |
+| No tags exist | Tag pills not shown below form; "All Tags" dropdown not shown in filters |
+| Tag filter active while tag deleted | Clear tag filter; restore "All Tags" |
+| Assigning >10 tags to a todo | Allowed; pills wrap to next line on card |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] Tags management section allows creating, editing, and deleting tags
-- [ ] Tag name is unique (case-insensitive); duplicate name returns 409
-- [ ] Tag color is stored and displayed as a hex color
-- [ ] Tags can be assigned to a todo via multi-select in the form
-- [ ] A todo can have zero, one, or multiple tags
-- [ ] Tag chips are visible on each todo card
-- [ ] Chips show the tag name on the tag's background color
-- [ ] Todo list can be filtered by one or more tags (OR logic)
-- [ ] Active tag filters are visually highlighted
-- [ ] Editing a tag updates the name/color across all todo cards
-- [ ] Deleting a tag removes it from all todo cards (cascade)
-- [ ] `ON DELETE CASCADE` on `todo_tags` verified by test
-- [ ] API returns 400 for invalid tag color format
-- [ ] API returns 409 for duplicate tag name
+- [ ] "+ Manage Tags" button opens tag management modal
+- [ ] User can create a tag with a name and color
+- [ ] Duplicate tag names per user are rejected
+- [ ] Tag appears as selectable pill below todo form after creation
+- [ ] Multiple tags can be selected when creating/editing a todo
+- [ ] Tag pills visible on todo cards with correct colors and white text
+- [ ] "All Tags" filter dropdown visible when tags exist
+- [ ] Selecting a tag filter shows only todos with that tag
+- [ ] Editing a tag color updates it on all associated todo cards
+- [ ] Deleting a tag removes it from all todos (no dangling references)
+- [ ] Tags are user-specific (users cannot see each other's tags)
+- [ ] Dark mode supported in modal and on pills
 
 ---
 
@@ -290,43 +254,32 @@ interface TagFilterProps {
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/tags.spec.ts
-
-test('create a new tag with name and color', async ({ page }) => { /* ... */ });
-test('duplicate tag name shows error', async ({ page }) => { /* ... */ });
-test('assign tags to a todo', async ({ page }) => { /* ... */ });
-test('tag chips appear on todo card', async ({ page }) => { /* ... */ });
-test('filter todos by tag shows only matching todos', async ({ page }) => { /* ... */ });
-test('filter by multiple tags returns union (OR)', async ({ page }) => { /* ... */ });
-test('delete tag removes chips from todos', async ({ page }) => { /* ... */ });
-test('edit tag name updates chips everywhere', async ({ page }) => { /* ... */ });
+// tests/06-tags.spec.ts
+test('create a tag with name and color');
+test('tag appears as selectable pill below form');
+test('assign tag to todo shows pill on card');
+test('tag filter shows only tagged todos');
+test('edit tag color updates on all todo cards');
+test('delete tag removes it from todo cards');
+test('duplicate tag name shows error');
 ```
 
 ### Unit Tests
 
 ```typescript
 // tests/unit/tags.test.ts
-test('parseTagsRaw: parses GROUP_CONCAT string to Tag array');
-test('parseTagsRaw: returns [] for null/empty input');
-test('validateHexColor: accepts #rrggbb');
-test('validateHexColor: accepts #rgb');
-test('validateHexColor: rejects invalid formats');
+test('tagDB.getByTodoId returns correct tags');
+test('tagDB.setTodoTags replaces existing tags');
+test('invalid hex color rejected');
+test('tag name trimmed on create');
 ```
 
 ---
 
 ## Out of Scope
 
-- Hierarchical / nested tags (parent-child)
-- Tag usage statistics (how many todos use a tag)
-- Tag auto-suggest based on todo title
-- Per-user tag sets (all tags are global)
-
----
-
-## Success Metrics
-
-- Tag filter renders in < 100 ms (client-side)
-- Cascade delete verified at DB level
-- Tag chips color contrast meets WCAG AA
-- All tag CRUD operations covered by E2E tests
+- Tag hierarchies (parent/child tags)
+- Shared tags across users
+- Tag-based sorting (beyond filtering)
+- Tag usage analytics
+- Predefined system tags

@@ -1,8 +1,8 @@
-# PRP 11 - Authentication (WebAuthn / Passkeys)
+# PRP 11 - WebAuthn/Passkeys Authentication
 
 ## Feature Overview
 
-Passwordless authentication using the WebAuthn standard (passkeys). Users register using their device's biometric authenticator (Face ID, Touch ID, Windows Hello, etc.) and log in without a password. Sessions are managed with JWT stored in HTTP-only cookies. All routes except `/login` and `/register` are protected by middleware.
+Passwordless authentication using WebAuthn/Passkeys. Users register with a username and their device's biometric authenticator (fingerprint, Face ID) or a security key. Sessions are managed as HTTP-only JWT cookies with a 7-day expiry. The middleware protects `/` and `/calendar` routes. No passwords are ever stored.
 
 ---
 
@@ -10,42 +10,41 @@ Passwordless authentication using the WebAuthn standard (passkeys). Users regist
 
 | ID | As a... | I want to... | So that... |
 |----|---------|-------------|-----------|
-| US-01 | User | Register with my device biometrics | I don't need to create or remember a password |
-| US-02 | User | Log in with my passkey | I can securely authenticate with a touch or glance |
-| US-03 | User | Be automatically redirected to login if my session expires | I'm prompted to re-authenticate when needed |
-| US-04 | User | Log out and end my session | My account is secure when I'm done |
-| US-05 | Admin | Have all API routes protected by authentication | Unauthenticated requests cannot read or modify todos |
+| US-01 | User | Register with a username and biometric | I can create an account without a password |
+| US-02 | User | Log in with my passkey | I can access my todos securely |
+| US-03 | User | Stay logged in for 7 days | I don't have to re-authenticate constantly |
+| US-04 | User | Log out | I can end my session on shared devices |
+| US-05 | Dev | Have all authenticated routes protected | Unauthenticated users cannot access todos |
 
 ---
 
 ## User Flow
 
 ### Registration
-1. User navigates to `/register`
-2. User enters a username (display name)
-3. Clicks "Register with Passkey"
-4. Browser prompts for biometric / security key authentication
-5. On success: credential is stored in the database; session JWT is issued
-6. User is redirected to `/` (main todo list)
+1. User visits `/login`
+2. Enters desired username in text input
+3. Clicks **"Register"** button
+4. Browser prompts for biometric/security key interaction
+5. On success: JWT session cookie set; redirected to `/`
+6. On failure: error message shown
 
 ### Login
-1. User navigates to `/login` (or is redirected there by middleware)
-2. User enters their username
-3. Clicks "Sign in with Passkey"
-4. Browser prompts for biometric / security key authentication
-5. On success: session JWT is issued and stored in HTTP-only cookie
-6. User is redirected to the originally requested page (or `/`)
-
-### Session Validation
-1. Every request to a protected route goes through Next.js middleware
-2. Middleware reads the `session` HTTP-only cookie
-3. JWT is verified; if valid, request proceeds
-4. If JWT is missing or expired: redirect to `/login?redirect=[original_path]`
+1. User visits `/login` (or is redirected there)
+2. Enters their username
+3. Clicks **"Login"** button
+4. Browser prompts for biometric/security key interaction
+5. On success: JWT session cookie set; redirected to `/`
+6. On failure: error message shown (wrong user / auth failed)
 
 ### Logout
-1. User clicks "Log out" in the header
-2. `POST /api/auth/logout` clears the session cookie
-3. User is redirected to `/login`
+1. User clicks **"Logout"** button (top-right corner)
+2. Session cookie cleared via `POST /api/auth/logout`
+3. Redirected to `/login`
+
+### Protected Route Access
+1. User visits `/` or `/calendar` without a session
+2. Middleware detects missing/invalid JWT
+3. Redirected to `/login`
 
 ---
 
@@ -55,9 +54,9 @@ Passwordless authentication using the WebAuthn standard (passkeys). Users regist
 
 ```json
 {
-  "@simplewebauthn/server": "^9.0.0",
-  "@simplewebauthn/browser": "^9.0.0",
-  "jose": "^5.0.0"
+  "@simplewebauthn/server": "^10.x",
+  "@simplewebauthn/browser": "^10.x",
+  "jose": "^5.x"
 }
 ```
 
@@ -65,359 +64,348 @@ Passwordless authentication using the WebAuthn standard (passkeys). Users regist
 
 ```sql
 CREATE TABLE users (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  username     TEXT NOT NULL UNIQUE,
-  created_at   TEXT NOT NULL
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  username   TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
 );
 
-CREATE TABLE credentials (
-  id                     TEXT PRIMARY KEY,         -- credential ID (base64url)
-  user_id                INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  public_key             TEXT NOT NULL,            -- base64url encoded
-  counter                INTEGER NOT NULL DEFAULT 0,
-  device_type            TEXT,                     -- 'platform' | 'cross-platform'
-  backed_up              INTEGER NOT NULL DEFAULT 0,
-  transports             TEXT,                     -- JSON array of transport strings
-  created_at             TEXT NOT NULL
+CREATE TABLE authenticators (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credential_id       TEXT NOT NULL UNIQUE,   -- base64url encoded
+  credential_public_key TEXT NOT NULL,        -- base64url encoded COSE key
+  counter             INTEGER NOT NULL DEFAULT 0,
+  transports          TEXT,                   -- JSON array of strings
+  created_at          TEXT NOT NULL
 );
 
-CREATE INDEX idx_credentials_user_id ON credentials(user_id);
+CREATE INDEX idx_authenticators_user_id ON authenticators(user_id);
+CREATE INDEX idx_authenticators_credential_id ON authenticators(credential_id);
+
+-- Temporary challenge storage (cleaned up after use)
+CREATE TABLE webauthn_challenges (
+  user_id    INTEGER NOT NULL,
+  challenge  TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id)
+);
 ```
 
-### Environment Variables
+### API Endpoints
 
-```env
-# .env.local
-JWT_SECRET=<32+ character random secret>
-WEBAUTHN_RP_ID=localhost          # domain for production (e.g., todo.example.com)
-WEBAUTHN_RP_NAME=Todo App
-WEBAUTHN_ORIGIN=http://localhost:3000  # must match browser origin
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/auth/register-options` | Generate WebAuthn registration challenge |
+| POST | `/api/auth/register-verify` | Verify registration response & create session |
+| POST | `/api/auth/login-options` | Generate WebAuthn authentication challenge |
+| POST | `/api/auth/login-verify` | Verify login response & create session |
+| POST | `/api/auth/logout` | Clear session cookie |
+| GET | `/api/auth/session` | Get current session info |
 
-### WebAuthn Flow — Registration
-
-#### Step 1: Generate Registration Options
-```
-POST /api/auth/register/options
-Body: { username: string }
-```
+#### POST /api/auth/register-options
 
 ```typescript
-// app/api/auth/register/options/route.ts
-import { generateRegistrationOptions } from '@simplewebauthn/server';
-
-export async function POST(request: Request) {
+// Request: { "username": "alice" }
+// Creates user if not exists, saves challenge to DB
+// Response: PublicKeyCredentialCreationOptionsJSON from @simplewebauthn/server
+export async function POST(request: NextRequest) {
   const { username } = await request.json();
-
   if (!username?.trim()) {
-    return Response.json({ error: 'Username is required' }, { status: 400 });
+    return NextResponse.json({ error: 'Username is required' }, { status: 400 });
   }
 
-  const db = getDb();
-
-  // Create or find user
-  let user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  let user = userDB.getByUsername(username.trim());
   if (!user) {
-    const result = db
-      .prepare('INSERT INTO users (username, created_at) VALUES (?, ?)')
-      .run(username.trim(), new Date().toISOString());
-    user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+    user = userDB.create({ username: username.trim() });
   }
-
-  const existingCredentials = db
-    .prepare('SELECT id, transports FROM credentials WHERE user_id = ?')
-    .all((user as any).id);
 
   const options = await generateRegistrationOptions({
-    rpName: process.env.WEBAUTHN_RP_NAME!,
-    rpID: process.env.WEBAUTHN_RP_ID!,
-    userID: new TextEncoder().encode(String((user as any).id)),
-    userName: username,
+    rpName: 'Todo App',
+    rpID: process.env.NEXT_PUBLIC_RP_ID ?? 'localhost',
+    userID: isoUint8Array.fromUTF8String(user.id.toString()),
+    userName: user.username,
     attestationType: 'none',
-    excludeCredentials: existingCredentials.map((c: any) => ({
-      id: c.id,
-      transports: JSON.parse(c.transports ?? '[]'),
-    })),
     authenticatorSelection: {
-      residentKey: 'required',
-      userVerification: 'required',
+      residentKey: 'preferred',
+      userVerification: 'preferred',
     },
   });
 
-  // Store challenge in session (use a temporary cookie or server-side store)
-  // For simplicity, use a signed cookie:
-  const response = Response.json({ options, userId: (user as any).id });
-  response.headers.set('Set-Cookie',
-    `regChallenge=${options.challenge}; HttpOnly; SameSite=Strict; Path=/; Max-Age=300`
-  );
+  challengeDB.upsert({ user_id: user.id, challenge: options.challenge });
+  return NextResponse.json(options);
+}
+```
+
+#### POST /api/auth/register-verify
+
+```typescript
+// Request: RegistrationResponseJSON from @simplewebauthn/browser
+// Verifies response, stores authenticator, creates JWT session
+export async function POST(request: NextRequest) {
+  const body = await request.json();
+  const { username } = body;
+
+  const user = userDB.getByUsername(username);
+  if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+
+  const expectedChallenge = challengeDB.getByUserId(user.id)?.challenge;
+  if (!expectedChallenge) return NextResponse.json({ error: 'No challenge found' }, { status: 400 });
+
+  const verification = await verifyRegistrationResponse({
+    response: body.response,
+    expectedChallenge,
+    expectedOrigin: process.env.NEXT_PUBLIC_ORIGIN ?? 'http://localhost:3000',
+    expectedRPID: process.env.NEXT_PUBLIC_RP_ID ?? 'localhost',
+  });
+
+  if (!verification.verified || !verification.registrationInfo) {
+    return NextResponse.json({ error: 'Verification failed' }, { status: 400 });
+  }
+
+  const { credential } = verification.registrationInfo;
+  authenticatorDB.create({
+    user_id: user.id,
+    credential_id: isoBase64URL.fromBuffer(credential.id),
+    credential_public_key: isoBase64URL.fromBuffer(credential.publicKey),
+    counter: credential.counter ?? 0,
+    transports: JSON.stringify(body.response.response.transports ?? []),
+  });
+
+  challengeDB.delete(user.id);
+  const token = await createJWT({ userId: user.id, username: user.username });
+  const response = NextResponse.json({ success: true });
+  response.cookies.set('session', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24 * 7, // 7 days
+    path: '/',
+  });
   return response;
 }
 ```
 
-#### Step 2: Verify Registration
-```
-POST /api/auth/register/verify
-Body: { userId, registrationResponse }
-```
+#### POST /api/auth/login-options
 
 ```typescript
-import { verifyRegistrationResponse } from '@simplewebauthn/server';
-
-export async function POST(request: Request) {
-  const { userId, registrationResponse } = await request.json();
-
-  // Read challenge from cookie
-  const cookies = parseCookies(request.headers.get('cookie') ?? '');
-  const expectedChallenge = cookies.regChallenge;
-
-  const verification = await verifyRegistrationResponse({
-    response: registrationResponse,
-    expectedChallenge,
-    expectedOrigin: process.env.WEBAUTHN_ORIGIN!,
-    expectedRPID: process.env.WEBAUTHN_RP_ID!,
-    requireUserVerification: true,
-  });
-
-  if (!verification.verified || !verification.registrationInfo) {
-    return Response.json({ error: 'Registration failed' }, { status: 400 });
-  }
-
-  const { credential, credentialDeviceType, credentialBackedUp } =
-    verification.registrationInfo;
-
-  const db = getDb();
-  db.prepare(
-    `INSERT INTO credentials
-       (id, user_id, public_key, counter, device_type, backed_up, transports, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    credential.id,
-    userId,
-    Buffer.from(credential.publicKey).toString('base64url'),
-    credential.counter,
-    credentialDeviceType,
-    credentialBackedUp ? 1 : 0,
-    JSON.stringify(credential.transports ?? []),
-    new Date().toISOString()
-  );
-
-  // Issue session JWT
-  const token = await issueJWT(userId);
-  const res = Response.json({ success: true });
-  res.headers.set('Set-Cookie',
-    `session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`
-  );
-  res.headers.append('Set-Cookie',
-    `regChallenge=; HttpOnly; Max-Age=0; Path=/`
-  );
-  return res;
-}
-```
-
-### WebAuthn Flow — Authentication
-
-#### Step 1: Generate Authentication Options
-```
-POST /api/auth/login/options
-Body: { username: string }
-```
-
-```typescript
-import { generateAuthenticationOptions } from '@simplewebauthn/server';
-
-export async function POST(request: Request) {
+// Request: { "username": "alice" }
+// Returns authentication options with allowed credentials
+export async function POST(request: NextRequest) {
   const { username } = await request.json();
+  const user = userDB.getByUsername(username?.trim());
+  if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-  const db = getDb();
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!user) {
-    return Response.json({ error: 'User not found' }, { status: 404 });
-  }
-
-  const credentials = db
-    .prepare('SELECT * FROM credentials WHERE user_id = ?')
-    .all((user as any).id);
-
+  const authenticators = authenticatorDB.getByUserId(user.id);
   const options = await generateAuthenticationOptions({
-    rpID: process.env.WEBAUTHN_RP_ID!,
-    userVerification: 'required',
-    allowCredentials: credentials.map((c: any) => ({
-      id: c.id,
-      transports: JSON.parse(c.transports ?? '[]'),
+    rpID: process.env.NEXT_PUBLIC_RP_ID ?? 'localhost',
+    userVerification: 'preferred',
+    allowCredentials: authenticators.map(a => ({
+      id: isoBase64URL.toBuffer(a.credential_id),
+      transports: JSON.parse(a.transports ?? '[]'),
     })),
   });
 
-  const res = Response.json({ options, userId: (user as any).id });
-  res.headers.set('Set-Cookie',
-    `authChallenge=${options.challenge}; HttpOnly; SameSite=Strict; Path=/; Max-Age=300`
-  );
-  return res;
+  challengeDB.upsert({ user_id: user.id, challenge: options.challenge });
+  return NextResponse.json(options);
 }
 ```
 
-#### Step 2: Verify Authentication
-```
-POST /api/auth/login/verify
-Body: { userId, authenticationResponse }
-```
+#### POST /api/auth/login-verify
 
 ```typescript
-import { verifyAuthenticationResponse } from '@simplewebauthn/server';
+// Request: AuthenticationResponseJSON + username
+export async function POST(request: NextRequest) {
+  const body = await request.json();
+  const user = userDB.getByUsername(body.username);
+  if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-export async function POST(request: Request) {
-  const { userId, authenticationResponse } = await request.json();
+  const expectedChallenge = challengeDB.getByUserId(user.id)?.challenge;
+  if (!expectedChallenge) return NextResponse.json({ error: 'No challenge found' }, { status: 400 });
 
-  const cookies = parseCookies(request.headers.get('cookie') ?? '');
-  const expectedChallenge = cookies.authChallenge;
-
-  const db = getDb();
-  const credential = db
-    .prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?')
-    .get(authenticationResponse.id, userId);
-
-  if (!credential) {
-    return Response.json({ error: 'Credential not found' }, { status: 400 });
-  }
-
-  const credentialPublicKey = Buffer.from((credential as any).public_key, 'base64url');
+  const credentialId = body.response.id;
+  const authenticator = authenticatorDB.getByCredentialId(credentialId);
+  if (!authenticator) return NextResponse.json({ error: 'Authenticator not found' }, { status: 404 });
 
   const verification = await verifyAuthenticationResponse({
-    response: authenticationResponse,
+    response: body.response,
     expectedChallenge,
-    expectedOrigin: process.env.WEBAUTHN_ORIGIN!,
-    expectedRPID: process.env.WEBAUTHN_RP_ID!,
+    expectedOrigin: process.env.NEXT_PUBLIC_ORIGIN ?? 'http://localhost:3000',
+    expectedRPID: process.env.NEXT_PUBLIC_RP_ID ?? 'localhost',
     credential: {
-      id: (credential as any).id,
-      publicKey: credentialPublicKey,
-      counter: (credential as any).counter,
-      transports: JSON.parse((credential as any).transports ?? '[]'),
+      id: isoBase64URL.toBuffer(authenticator.credential_id),
+      publicKey: isoBase64URL.toBuffer(authenticator.credential_public_key),
+      counter: authenticator.counter ?? 0,
+      transports: JSON.parse(authenticator.transports ?? '[]'),
     },
-    requireUserVerification: true,
   });
 
   if (!verification.verified) {
-    return Response.json({ error: 'Authentication failed' }, { status: 401 });
+    return NextResponse.json({ error: 'Verification failed' }, { status: 400 });
   }
 
-  // Update counter
-  db.prepare('UPDATE credentials SET counter = ? WHERE id = ?')
-    .run(verification.authenticationInfo.newCounter, (credential as any).id);
+  authenticatorDB.updateCounter(authenticator.id, verification.authenticationInfo.newCounter);
+  challengeDB.delete(user.id);
 
-  const token = await issueJWT(userId);
-  const res = Response.json({ success: true });
-  res.headers.set('Set-Cookie',
-    `session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`
-  );
-  res.headers.append('Set-Cookie',
-    `authChallenge=; HttpOnly; Max-Age=0; Path=/`
-  );
-  return res;
+  const token = await createJWT({ userId: user.id, username: user.username });
+  const response = NextResponse.json({ success: true });
+  response.cookies.set('session', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24 * 7,
+    path: '/',
+  });
+  return response;
 }
 ```
 
-### JWT Utilities
+#### POST /api/auth/logout
 
 ```typescript
-// lib/jwt.ts
-import { SignJWT, jwtVerify } from 'jose';
-
-const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
-
-export async function issueJWT(userId: number): Promise<string> {
-  return new SignJWT({ userId })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setIssuedAt()
-    .setExpirationTime('24h')
-    .sign(secret);
-}
-
-export async function verifyJWT(token: string): Promise<{ userId: number }> {
-  const { payload } = await jwtVerify(token, secret);
-  return { userId: payload.userId as number };
+export async function POST() {
+  const response = NextResponse.json({ success: true });
+  response.cookies.delete('session');
+  return response;
 }
 ```
 
-### Route Protection Middleware
+### JWT Session (lib/auth.ts)
+
+```typescript
+// lib/auth.ts
+import { SignJWT, jwtVerify } from 'jose';
+import { cookies } from 'next/headers';
+
+const JWT_SECRET = new TextEncoder().encode(
+  process.env.JWT_SECRET ?? 'dev-secret-change-in-production'
+);
+
+export interface Session {
+  userId: number;
+  username: string;
+}
+
+export async function createJWT(payload: Session): Promise<string> {
+  return new SignJWT(payload as Record<string, unknown>)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime('7d')
+    .setIssuedAt()
+    .sign(JWT_SECRET);
+}
+
+export async function getSession(): Promise<Session | null> {
+  try {
+    const cookieStore = await cookies();
+    const token = cookieStore.get('session')?.value;
+    if (!token) return null;
+    const { payload } = await jwtVerify(token, JWT_SECRET);
+    return payload as unknown as Session;
+  } catch {
+    return null;
+  }
+}
+```
+
+### Middleware (middleware.ts)
 
 ```typescript
 // middleware.ts
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { verifyJWT } from '@/lib/jwt';
+import { NextRequest, NextResponse } from 'next/server';
+import { jwtVerify } from 'jose';
 
-const PUBLIC_PATHS = ['/login', '/register', '/api/auth'];
+const JWT_SECRET = new TextEncoder().encode(
+  process.env.JWT_SECRET ?? 'dev-secret-change-in-production'
+);
 
 export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-
-  // Allow public paths
-  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
-    return NextResponse.next();
-  }
-
   const token = request.cookies.get('session')?.value;
-
-  if (!token) {
-    const loginUrl = new URL('/login', request.url);
-    loginUrl.searchParams.set('redirect', pathname);
-    return NextResponse.redirect(loginUrl);
-  }
-
+  if (!token) return NextResponse.redirect(new URL('/login', request.url));
   try {
-    await verifyJWT(token);
+    await jwtVerify(token, JWT_SECRET);
     return NextResponse.next();
   } catch {
-    const loginUrl = new URL('/login', request.url);
-    loginUrl.searchParams.set('redirect', pathname);
-    const response = NextResponse.redirect(loginUrl);
-    response.cookies.delete('session');
-    return response;
+    return NextResponse.redirect(new URL('/login', request.url));
   }
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/', '/calendar'],
 };
 ```
 
-### Logout
+### Environment Variables
 
-```typescript
-// app/api/auth/logout/route.ts
-export async function POST() {
-  const res = Response.json({ success: true });
-  res.headers.set('Set-Cookie',
-    'session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0'
-  );
-  return res;
-}
+```bash
+# .env.local
+NEXT_PUBLIC_RP_ID=localhost                     # domain for WebAuthn (no port, no protocol)
+NEXT_PUBLIC_ORIGIN=http://localhost:3000        # full origin URL
+JWT_SECRET=your-256-bit-secret-here            # minimum 32 characters
 ```
 
 ---
 
 ## UI Components
 
-### RegisterPage (`app/register/page.tsx`)
+### Login Page (`app/login/page.tsx`)
 ```tsx
-// Username input + "Register with Passkey" button
-// Uses @simplewebauthn/browser: startRegistration()
-// On success: redirects to /
-// On failure: shows error message
+// 'use client' component
+// Username text input
+// "Register" button → calls register-options then register-verify
+// "Login" button → calls login-options then login-verify
+// Uses @simplewebauthn/browser: startRegistration / startAuthentication
+// Error state display
 ```
 
-### LoginPage (`app/login/page.tsx`)
+### Logout Button (on main page)
 ```tsx
-// Username input + "Sign in with Passkey" button
-// Uses @simplewebauthn/browser: startAuthentication()
-// On success: redirects to ?redirect param or /
-// On failure: shows error message
+// Top-right corner
+// "Logout" text or icon button
+// Calls POST /api/auth/logout then redirects to /login
 ```
 
-### LogoutButton
-```tsx
-// Button in app header
-// Calls POST /api/auth/logout
-// On success: redirects to /login
+### Client-Side Auth Flow
+
+```typescript
+// In app/login/page.tsx
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
+
+async function handleRegister() {
+  const optRes = await fetch('/api/auth/register-options', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+  });
+  const options = await optRes.json();
+
+  const response = await startRegistration({ optionsJSON: options });
+
+  const verifyRes = await fetch('/api/auth/register-verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, response }),
+  });
+  if (verifyRes.ok) router.push('/');
+  else setError('Registration failed');
+}
+
+async function handleLogin() {
+  const optRes = await fetch('/api/auth/login-options', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+  });
+  const options = await optRes.json();
+
+  const response = await startAuthentication({ optionsJSON: options });
+
+  const verifyRes = await fetch('/api/auth/login-verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, response }),
+  });
+  if (verifyRes.ok) router.push('/');
+  else setError('Login failed. Please try again.');
+}
 ```
 
 ---
@@ -426,33 +414,41 @@ export async function POST() {
 
 | Scenario | Handling |
 |----------|----------|
-| User registers same username twice | Second registration adds a new credential for the same user; does not error |
-| Credential ID already exists | INSERT will fail; return 409 Conflict |
-| JWT secret not set in env | App crashes at startup — fail fast with clear error message |
-| WebAuthn not supported in browser | Detect `window.PublicKeyCredential`; show fallback message if not supported |
-| Challenge cookie missing on verify | Return 400: "Registration session expired, please try again" |
-| Expired JWT | Middleware clears cookie and redirects to /login |
-| User accesses /login with active valid session | Redirect to / (already logged in) |
-| Counter verification fails (potential cloning attack) | Return 401; log security event |
-| API route called without session (unauthenticated) | Return 401 JSON, not a redirect (to avoid breaking API clients) |
+| Username already has passkey (register again) | Adds additional authenticator to same user |
+| Unknown username on login | 404: "User not found" |
+| Challenge expired or missing | 400: "No challenge found"; user must restart flow |
+| User cancels biometric prompt | `startRegistration`/`startAuthentication` throws; catch and show user-friendly message |
+| Invalid/expired JWT in cookie | Middleware catches jwtVerify error; redirects to /login |
+| `counter` field undefined | Always use `authenticator.counter ?? 0` to handle null/undefined safely |
+| Credentials encoded incorrectly | Use `isoBase64URL` from `@simplewebauthn/server/helpers` for all credential_id conversions |
+| Production deployment (non-localhost) | Set `NEXT_PUBLIC_RP_ID` to actual domain (e.g., `example.com`) |
+
+---
+
+## Security Requirements
+
+- [ ] JWT_SECRET must be at minimum 32 characters; never hardcoded
+- [ ] Session cookie is `httpOnly: true` to prevent XSS access
+- [ ] Session cookie is `secure: true` in production
+- [ ] Session cookie uses `sameSite: 'lax'` to prevent CSRF
+- [ ] Challenges are single-use (deleted after verify)
+- [ ] Counter verified on login to detect cloned authenticators
+- [ ] RPID and Origin validated on both registration and authentication
+- [ ] No passwords stored anywhere
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] `/register` page allows registering with a username and passkey
-- [ ] `/login` page allows signing in with an existing passkey
-- [ ] Successful registration/login sets an HTTP-only `session` cookie
-- [ ] JWT expires after 24 hours
-- [ ] All routes except `/login`, `/register`, and `/api/auth/*` are protected
-- [ ] Unauthenticated requests to pages redirect to `/login?redirect=[path]`
-- [ ] Unauthenticated requests to API routes return `401 JSON`, not redirect
-- [ ] Logging out clears the session cookie and redirects to `/login`
-- [ ] After login, user is redirected to the originally requested page
-- [ ] WebAuthn credential counter is updated after each authentication
-- [ ] Challenge cookies are short-lived (5 minutes) and HTTP-only
-- [ ] `JWT_SECRET` of less than 32 characters causes a startup error or warning
-- [ ] Browser without WebAuthn support sees a clear error message
+- [ ] `/login` page accessible without authentication
+- [ ] User can register with username and biometric
+- [ ] User can log in with registered passkey
+- [ ] Successful auth sets HTTP-only session cookie with 7-day expiry
+- [ ] Middleware redirects unauthenticated users to `/login`
+- [ ] Middleware protects both `/` and `/calendar` routes
+- [ ] "Logout" button clears session and redirects to `/login`
+- [ ] `GET /api/auth/session` returns current user info (userId, username)
+- [ ] WebAuthn uses virtual authenticator in Playwright tests
 
 ---
 
@@ -461,57 +457,46 @@ export async function POST() {
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/auth.spec.ts
+// tests/01-authentication.spec.ts
+// Uses virtual WebAuthn authenticator (Chromium CDP flags)
+test('register new user and redirect to main page');
+test('login with existing passkey');
+test('logout clears session and redirects to login');
+test('protected route / redirects to /login when unauthenticated');
+test('protected route /calendar redirects to /login when unauthenticated');
+```
 
-test('register new user with passkey', async ({ page, context }) => {
-  // Requires Playwright's WebAuthn virtual authenticator
-  await context.addVirtualAuthenticator({ protocol: 'ctap2', transport: 'internal' });
-  /* ... */
-});
-test('login with registered passkey', async ({ page, context }) => { /* ... */ });
-test('unauthenticated user redirected to login', async ({ page }) => { /* ... */ });
-test('login redirect preserves original URL', async ({ page }) => { /* ... */ });
-test('logout clears session', async ({ page }) => { /* ... */ });
-test('expired session redirects to login', async ({ page }) => { /* ... */ });
-test('API returns 401 for unauthenticated requests', async ({ page }) => { /* ... */ });
+### Playwright Config for Virtual Authenticator
+
+```typescript
+// playwright.config.ts
+use: {
+  timezoneId: 'Asia/Singapore',
+  launchOptions: {
+    args: [
+      '--enable-features=WebAuthenticationVirtualAuthenticators',
+    ],
+  },
+},
 ```
 
 ### Unit Tests
 
 ```typescript
-// tests/unit/jwt.test.ts
-test('issueJWT: creates a signed JWT with userId claim');
-test('verifyJWT: returns userId from valid token');
-test('verifyJWT: throws on expired token');
-test('verifyJWT: throws on tampered token');
+// tests/unit/auth.test.ts
+test('createJWT produces a valid token');
+test('getSession returns null for missing token');
+test('getSession returns null for expired token');
+test('getSession returns session for valid token');
 ```
 
 ---
 
 ## Out of Scope
 
-- Multi-user support (this app is single-user or small team)
-- OAuth / social login (Google, GitHub)
-- Password-based fallback authentication
-- Magic link / email authentication
-- Role-based access control (RBAC)
-- Account deletion / credential revocation UI
-
----
-
-## Security Notes
-
-- JWT is stored in HTTP-only, Secure, SameSite=Strict cookie to prevent XSS theft
-- Challenge cookies have a 5-minute TTL and are cleared after verification
-- Credential counter is verified to detect cloned authenticators
-- `rpID` must match the exact domain in production to prevent phishing
-- All WebAuthn operations use `userVerification: 'required'` (biometric/PIN required)
-
----
-
-## Success Metrics
-
-- Registration and login complete in < 2 seconds (excluding biometric prompt)
-- Zero credentials stored in plaintext (public key only, never private key)
-- Middleware adds < 5 ms latency per request
-- All auth flows covered by E2E tests using Playwright's virtual authenticator
+- Multiple passkeys per user (supported by schema, not explicitly shown in UI)
+- Passkey management page (delete/rename passkeys)
+- OAuth/social login
+- Magic link email authentication
+- Multi-factor authentication beyond WebAuthn
+- Account deletion

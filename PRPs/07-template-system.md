@@ -2,7 +2,7 @@
 
 ## Feature Overview
 
-Allows users to save existing todos as reusable templates and create new todos from those templates. Templates capture the title, description, priority, and subtasks of a todo. When creating a todo from a template, a due date offset can be applied (e.g., "due 3 days from now"). Templates can be organized into categories.
+Save frequently used todo patterns as reusable templates for instant task creation. Templates store a todo's title, priority, recurrence settings, reminder timing, category, and description. When used, a new todo is created immediately — the user only needs to set the due date.
 
 ---
 
@@ -10,40 +10,44 @@ Allows users to save existing todos as reusable templates and create new todos f
 
 | ID | As a... | I want to... | So that... |
 |----|---------|-------------|-----------|
-| US-01 | User | Save a todo as a template | I can reuse recurring task structures |
-| US-02 | User | Create a new todo from a template | I don't have to manually re-enter repeated task details |
-| US-03 | User | Set a due date offset when using a template | The new todo's due date is automatically calculated |
-| US-04 | User | Browse and select templates by category | I can find relevant templates quickly |
-| US-05 | User | Edit or delete a template | I can keep my template library up to date |
+| US-01 | User | Save a todo configuration as a template | I can quickly recreate common tasks |
+| US-02 | User | Browse and use templates from a modal | I don't have to re-enter repeated settings |
+| US-03 | User | Use a template from a quick dropdown | I can create a templated todo in one click |
+| US-04 | User | Organize templates by category | I can find the right template quickly |
+| US-05 | User | Delete templates no longer needed | I can keep my library clean |
 
 ---
 
 ## User Flow
 
-### Saving a Todo as a Template
-1. User opens an existing todo's action menu (or a dedicated "Save as Template" button)
-2. A "Save as Template" modal appears, pre-populated with:
-   - Template name (defaults to the todo's title)
-   - Category (optional text field or dropdown)
-   - Due date offset (optional, e.g., "+3 days" — stored as integer days)
-3. User confirms
-4. Template is saved; a success toast is shown
+### Saving a Template
+1. Fill out todo form (title required, set priority, recurrence, reminder)
+2. When title is non-empty, **"💾 Save as Template"** button appears
+3. User clicks it; a "Save Template" modal opens
+4. User fills in:
+   - **Name**: Template identifier (required)
+   - **Description**: Optional purpose/details
+   - **Category**: Optional grouping (Work, Personal, Finance, Health, Education, or custom)
+5. Clicks **"Save Template"**
+6. Template saved; modal closes
 
-### Creating a Todo from a Template
-1. User clicks "+ Add Todo" → "From Template" tab/option
-2. A template browser/selector shows available templates, grouped by category
-3. User searches or browses templates
-4. User selects a template
-5. The todo form is pre-filled with the template's: title, description, priority
-6. If the template has a `dueDateOffset`, the due date is pre-filled as `TODAY + offset days`
-7. User can modify any pre-filled fields before saving
-8. Subtasks from the template are pre-populated in the subtasks section
+### Using a Template (Quick Dropdown)
+1. In todo form, find **"Use Template"** dropdown
+2. Select a template from the list (shows `"Name (Category)"` format if category set)
+3. Todo created **instantly** with template settings
+4. User may edit the new todo to add a due date
 
-### Managing Templates
-1. User navigates to "Templates" management page
-2. Templates are listed, grouped by category
-3. User can: edit name/category/offset, delete a template
-4. Editing a template does not affect todos already created from it
+### Using a Template (Template Manager)
+1. Click **"📋 Templates"** button in top navigation
+2. Template Manager modal opens with full list
+3. Browse templates; each card shows: name, description, category badge, priority badge, recurrence badge, reminder badge
+4. Click **"Use"** to create a todo from that template
+5. Modal closes; new todo appears
+
+### Deleting a Template
+1. In Template Manager modal, click **"Delete"** on a template
+2. Confirm deletion
+3. Template removed; existing todos created from it are unaffected
 
 ---
 
@@ -53,210 +57,217 @@ Allows users to save existing todos as reusable templates and create new todos f
 
 ```sql
 CREATE TABLE templates (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  name            TEXT NOT NULL,
-  description     TEXT,
-  priority        TEXT NOT NULL DEFAULT 'medium',
-  category        TEXT,                    -- free-text category label
-  due_date_offset INTEGER,                 -- days offset from today (nullable)
-  subtasks_json   TEXT NOT NULL DEFAULT '[]', -- JSON array of subtask titles
-  created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name               TEXT NOT NULL,
+  title_template     TEXT NOT NULL,   -- todo title to use on creation
+  description        TEXT,
+  category           TEXT,            -- 'Work'|'Personal'|'Finance'|'Health'|'Education'|custom
+  priority           TEXT NOT NULL DEFAULT 'medium',
+  is_recurring       INTEGER NOT NULL DEFAULT 0,
+  recurrence_pattern TEXT,            -- 'daily'|'weekly'|'monthly'|'yearly'
+  reminder_minutes   INTEGER,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL
 );
-```
 
-### Subtasks JSON Serialization
-
-Subtasks are stored as a JSON array of strings (titles only — no completion state in templates):
-
-```json
-["Research competitors", "Write outline", "Draft content", "Review and publish"]
-```
-
-```typescript
-// lib/templates.ts
-export function serializeSubtasks(subtaskTitles: string[]): string {
-  return JSON.stringify(subtaskTitles);
-}
-
-export function deserializeSubtasks(json: string): string[] {
-  try {
-    const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((s): s is string => typeof s === 'string');
-  } catch {
-    return [];
-  }
-}
-```
-
-### Due Date Offset Calculation
-
-```typescript
-// lib/templates.ts
-import { addDays } from 'date-fns';
-import { fromZonedTime, toZonedTime } from 'date-fns-tz';
-
-const SGT = 'Asia/Singapore';
-
-export function calculateDueDate(offsetDays: number | null): string | null {
-  if (offsetDays === null || offsetDays === undefined) return null;
-  // Start of today in SGT
-  const todaySGT = toZonedTime(new Date(), SGT);
-  todaySGT.setHours(0, 0, 0, 0);
-  const dueInSGT = addDays(todaySGT, offsetDays);
-  return fromZonedTime(dueInSGT, SGT).toISOString();
-}
+CREATE INDEX idx_templates_user_id ON templates(user_id);
 ```
 
 ### API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/templates` | List all templates (with optional `?category=` filter) |
+| GET | `/api/templates` | List all templates for authenticated user |
 | POST | `/api/templates` | Create a new template |
-| GET | `/api/templates/[id]` | Get a single template |
-| PUT | `/api/templates/[id]` | Update a template |
 | DELETE | `/api/templates/[id]` | Delete a template |
-| POST | `/api/todos/from-template/[templateId]` | Create a todo from a template |
+| POST | `/api/templates/[id]/use` | Create a todo from a template |
 
 #### GET /api/templates
 
-Response:
-```json
+```typescript
+// Response
 {
-  "templates": [
-    {
-      "id": 1,
-      "name": "Weekly Review",
-      "description": "Review goals and plan next week",
-      "priority": "high",
-      "category": "Productivity",
-      "dueDateOffset": 0,
-      "subtasks": ["Review last week", "Set goals", "Schedule tasks"],
-      "createdAt": "...",
-      "updatedAt": "..."
-    }
-  ]
+  "templates": [{
+    "id": 1,
+    "name": "Weekly Review",
+    "title_template": "Weekly Review",
+    "description": "Review last week's todos and plan ahead",
+    "category": "Work",
+    "priority": "medium",
+    "is_recurring": true,
+    "recurrence_pattern": "weekly",
+    "reminder_minutes": 1440,
+    "created_at": "2025-11-01T09:00:00Z"
+  }]
 }
 ```
-
-Note: `subtasks` is deserialized from `subtasks_json` before returning.
 
 #### POST /api/templates
 
-Request body:
-```json
+```typescript
+// Request body
 {
   "name": "Weekly Review",
+  "title_template": "Weekly Review",
   "description": "...",
-  "priority": "high",
-  "category": "Productivity",
-  "dueDateOffset": 0,
-  "subtasks": ["Review last week", "Set goals"]
+  "category": "Work",
+  "priority": "medium",
+  "is_recurring": true,
+  "recurrence_pattern": "weekly",
+  "reminder_minutes": 1440
+}
+// Response: 201 Created with template object
+```
+
+#### POST /api/templates/[id]/use
+
+```typescript
+// Creates a new todo from the template settings
+// Request body: { "due_date": "2025-11-15T09:00:00" }  (optional)
+// Response: 201 Created with new todo object
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+  const { id } = await params;
+  const body = await request.json();
+  const template = templateDB.getById(Number(id), session.userId);
+  if (!template) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  const now = getSingaporeNow().toISOString();
+  const todo = todoDB.create({
+    user_id: session.userId,
+    title: template.title_template,
+    priority: template.priority,
+    is_recurring: template.is_recurring ? 1 : 0,
+    recurrence_pattern: template.recurrence_pattern ?? null,
+    reminder_minutes: template.reminder_minutes ?? null,
+    due_date: body.due_date ?? null,
+    completed: 0,
+    created_at: now,
+    updated_at: now,
+  });
+
+  return NextResponse.json(todo, { status: 201 });
 }
 ```
 
-#### POST /api/todos/from-template/[templateId]
+### Database Operations (lib/db.ts)
 
-Optional request body to override template defaults:
-```json
-{
-  "dueDateOffset": 7,
-  "title": "Custom title"
-}
+```typescript
+export const templateDB = {
+  getByUserId: (userId: number): Template[] =>
+    db.prepare('SELECT * FROM templates WHERE user_id = ? ORDER BY name').all(userId) as Template[],
+
+  getById: (id: number, userId: number): Template | null =>
+    db.prepare('SELECT * FROM templates WHERE id = ? AND user_id = ?').get(id, userId) as Template | null,
+
+  create: (data: CreateTemplateInput): Template => {
+    const now = getSingaporeNow().toISOString();
+    const result = db.prepare(`
+      INSERT INTO templates (user_id, name, title_template, description, category, priority,
+        is_recurring, recurrence_pattern, reminder_minutes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      data.user_id, data.name, data.title_template, data.description ?? null,
+      data.category ?? null, data.priority, data.is_recurring ? 1 : 0,
+      data.recurrence_pattern ?? null, data.reminder_minutes ?? null, now, now
+    );
+    return templateDB.getById(result.lastInsertRowid as number, data.user_id)!;
+  },
+
+  delete: (id: number, userId: number): void => {
+    db.prepare('DELETE FROM templates WHERE id = ? AND user_id = ?').run(id, userId);
+  },
+};
 ```
-
-Server logic:
-1. Fetch template by ID
-2. Calculate due date: `calculateDueDate(body.dueDateOffset ?? template.dueDateOffset)`
-3. Create todo with template's title, description, priority
-4. Create subtasks from `deserializeSubtasks(template.subtasks_json)`
-5. Return created todo with subtasks
-
-Response: `201 Created` with full todo object including subtasks.
 
 ### TypeScript Types
 
 ```typescript
-// types/template.ts
+// lib/db.ts
 export interface Template {
   id: number;
+  user_id: number;
   name: string;
+  title_template: string;
   description: string | null;
-  priority: 'high' | 'medium' | 'low';
   category: string | null;
-  dueDateOffset: number | null;  // days from today
-  subtasks: string[];            // deserialized array of subtask titles
-  createdAt: string;
-  updatedAt: string;
+  priority: Priority;
+  is_recurring: boolean;
+  recurrence_pattern: RecurrencePattern | null;
+  reminder_minutes: number | null;
+  created_at: string;
+  updated_at: string;
 }
 
-export type CreateTemplateInput = {
+export interface CreateTemplateInput {
+  user_id: number;
   name: string;
+  title_template: string;
   description?: string;
-  priority?: 'high' | 'medium' | 'low';
   category?: string;
-  dueDateOffset?: number;
-  subtasks?: string[];
-};
+  priority: Priority;
+  is_recurring: boolean;
+  recurrence_pattern?: RecurrencePattern;
+  reminder_minutes?: number;
+}
 ```
 
-### Validation Rules
+### What Templates Store vs. Do NOT Store
 
-| Field | Rules |
-|-------|-------|
-| name | Required, 1–255 characters, trimmed |
-| description | Optional, max 2000 characters |
-| priority | Optional, must be `high`, `medium`, or `low` |
-| category | Optional, max 100 characters |
-| dueDateOffset | Optional, integer ≥ 0, max 3650 (10 years) |
-| subtasks | Optional, array of strings, each 1–500 chars, max 50 subtasks |
+**Stored:**
+- Todo title (as `title_template`)
+- Priority level
+- Recurrence enabled/pattern
+- Reminder timing (minutes)
+- Category, description, name
+
+**NOT stored:**
+- Specific due dates
+- Tags (user selects on creation)
+- Subtasks (added after creation)
+- Original todo IDs
 
 ---
 
 ## UI Components
 
-### TemplateManager
+### "💾 Save as Template" Button (in todo form)
 ```tsx
-// Template management page
-// Groups templates by category
-// Supports search by name
-// Edit and delete actions
+// Appears when title input is non-empty
+// Opens "Save Template" modal on click
+// Should not interfere with normal "Add" flow
 ```
 
-### TemplateBrowser
+### Save Template Modal
 ```tsx
-// Modal or panel for selecting a template when creating a todo
-// Shows template name, category, priority badge, subtask count, due date offset
-// Search input to filter templates
-interface TemplateBrowserProps {
-  onSelect: (template: Template) => void;
-  onClose: () => void;
-}
+// Fields: Name (required), Description (optional), Category (optional dropdown)
+// Shows current settings being saved as preview
+// "Save Template" + "Cancel" buttons
 ```
 
-### TemplateCard
+### "Use Template" Dropdown (in todo form)
 ```tsx
-// Summary card for a template in the browser
-// Shows: name, category badge, priority badge, "X subtasks", "Due in N days" or "No due date"
-interface TemplateCardProps {
-  template: Template;
-  onSelect: () => void;
-}
+// Dropdown: "Use Template..." placeholder
+// Lists templates as: "Name (Category)" or just "Name"
+// Selecting a template instantly creates a todo
+// Only visible if user has at least one template
 ```
 
-### SaveAsTemplateModal
+### Template Manager Modal (accessed via "📋 Templates" button)
 ```tsx
-// Modal that captures template metadata when saving a todo as template
-// Pre-fills name from todo.title
-// Fields: name, category, dueDateOffset
-interface SaveAsTemplateModalProps {
-  todo: Todo;
-  subtasks: Subtask[];
-  onSave: (input: CreateTemplateInput) => void;
-  onClose: () => void;
-}
+// Header: "📋 Templates" + close button
+// Empty state: "No templates yet. Save a todo as a template to get started."
+// Each template card:
+//   - Name (bold)
+//   - Description (muted, if set)
+//   - Category badge (colored, if set)
+//   - Priority badge
+//   - Recurrence badge (🔄 + pattern, if set)
+//   - Reminder badge (🔔 + abbreviated time, if set)
+//   - [ Use ] [ Delete ] buttons
 ```
 
 ---
@@ -265,31 +276,28 @@ interface SaveAsTemplateModalProps {
 
 | Scenario | Handling |
 |----------|----------|
-| Template with `dueDateOffset = 0` | Due date = today (start of day in SGT) |
-| Template with `dueDateOffset = null` | No due date pre-filled; user can set manually |
-| Template subtasks_json is malformed | `deserializeSubtasks` returns `[]`; no crash |
-| Template deleted | Todos created from it are unaffected (no FK to template) |
-| Todo with no subtasks saved as template | `subtasks_json = '[]'` |
-| Very large subtasks array | Capped at 50 subtasks (validation rule) |
-| Template category is empty string | Stored as `null` (treated as "Uncategorized") |
+| Template name already exists | Allowed (no uniqueness constraint on name per user) |
+| Using template without due date | Todo created with `due_date = null`; user edits to add date |
+| Template with recurrence used without due date | Todo created; recurrence badge shows, but can't complete without due date |
+| Deleting a template | Does NOT affect existing todos created from it |
+| No templates exist | Dropdown not shown; template manager shows empty state |
+| Category field empty | Stored as `null`; template displayed without category badge |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] User can save any todo as a template via a "Save as Template" action
-- [ ] Template captures: name, description, priority, category, due date offset, subtasks
-- [ ] Templates management page lists all templates grouped by category
-- [ ] User can create a new todo from a template
-- [ ] Pre-filled todo form shows template's title, description, priority
-- [ ] If template has `dueDateOffset`, due date is pre-filled as `TODAY + offset`
-- [ ] If template has subtasks, they are pre-populated in the subtask section (all unchecked)
-- [ ] User can edit any pre-filled field before saving the todo
-- [ ] Template can be edited (name, category, offset, subtasks)
-- [ ] Template can be deleted; no effect on existing todos
-- [ ] `subtasks_json` is valid JSON array at all times
-- [ ] API returns 404 for unknown template ID
-- [ ] Due date calculation uses Singapore timezone (midnight SGT as day start)
+- [ ] "💾 Save as Template" button appears when title is non-empty in todo form
+- [ ] Saving template opens modal with Name, Description, Category fields
+- [ ] Template appears in "Use Template" dropdown after saving
+- [ ] Using template from dropdown creates todo immediately
+- [ ] "📋 Templates" button opens Template Manager modal
+- [ ] Template cards show name, description, category, priority, recurrence, reminder info
+- [ ] "Use" button creates a todo from the template
+- [ ] "Delete" button removes template from list
+- [ ] Deleting template does NOT affect existing todos
+- [ ] Empty state shown when no templates exist
+- [ ] Templates are user-specific
 
 ---
 
@@ -298,45 +306,22 @@ interface SaveAsTemplateModalProps {
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/templates.spec.ts
-
-test('save todo as template', async ({ page }) => { /* ... */ });
-test('template appears in template browser', async ({ page }) => { /* ... */ });
-test('create todo from template pre-fills fields', async ({ page }) => { /* ... */ });
-test('due date offset applied correctly', async ({ page }) => { /* ... */ });
-test('subtasks pre-populated from template', async ({ page }) => { /* ... */ });
-test('edit template name', async ({ page }) => { /* ... */ });
-test('delete template', async ({ page }) => { /* ... */ });
-test('templates grouped by category', async ({ page }) => { /* ... */ });
-```
-
-### Unit Tests
-
-```typescript
-// tests/unit/templates.test.ts
-test('serializeSubtasks: returns valid JSON array string');
-test('deserializeSubtasks: parses valid JSON array');
-test('deserializeSubtasks: returns [] for invalid JSON');
-test('deserializeSubtasks: filters non-string elements');
-test('calculateDueDate: offset 0 returns today midnight SGT');
-test('calculateDueDate: offset 3 returns 3 days from today');
-test('calculateDueDate: null offset returns null');
+// tests/07-templates.spec.ts
+test('save todo form as template');
+test('template appears in Use Template dropdown');
+test('use template creates todo with correct settings');
+test('template manager modal shows all templates');
+test('delete template removes it from list');
+test('deleting template does not affect existing todos');
+test('empty state shown when no templates');
 ```
 
 ---
 
 ## Out of Scope
 
-- Template sharing between users
-- Template versioning (history of edits)
-- Importing templates from external sources
-- Tags being stored in templates
-
----
-
-## Success Metrics
-
-- Todo creation from template completes in < 500 ms
-- `subtasks_json` is always valid JSON (never `undefined` or malformed)
-- Due date calculation is accurate to the day in SGT
-- All template CRUD + todo-from-template covered by E2E tests
+- Editing/updating templates (delete and re-create workflow)
+- Importing/exporting templates separately
+- Shared templates between users
+- Template versioning
+- Subtasks in templates

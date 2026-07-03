@@ -2,7 +2,7 @@
 
 ## Feature Overview
 
-Allows users to break a todo into a checklist of subtasks. Each subtask has a title and a completion state. A visual progress bar on the todo card shows the percentage of completed subtasks. Subtasks have an explicit position for ordering, and deleting a parent todo cascades to all its subtasks.
+Break down complex todos into smaller, manageable subtasks with real-time progress tracking. Each todo can have unlimited subtasks; completing subtasks updates a visual progress bar and text counter. Subtasks cascade-delete when the parent todo is deleted.
 
 ---
 
@@ -10,46 +10,35 @@ Allows users to break a todo into a checklist of subtasks. Each subtask has a ti
 
 | ID | As a... | I want to... | So that... |
 |----|---------|-------------|-----------|
-| US-01 | User | Add subtasks to a todo | I can break down complex tasks into smaller steps |
-| US-02 | User | Check off individual subtasks | I can track partial completion |
-| US-03 | User | See a progress bar showing how many subtasks are done | I can gauge how close I am to finishing |
-| US-04 | User | Reorder subtasks | I can prioritize steps within a task |
-| US-05 | User | Delete a subtask | I can remove steps that are no longer needed |
-| US-06 | User | See subtask count on the todo card | I know how many steps are involved at a glance |
+| US-01 | User | Add subtasks to a todo | I can break complex tasks into smaller steps |
+| US-02 | User | See a progress bar for a todo with subtasks | I can visually track how much work remains |
+| US-03 | User | Mark individual subtasks as complete | I can track incremental progress |
+| US-04 | User | Delete individual subtasks | I can remove steps that are no longer needed |
+| US-05 | User | Collapse and expand the subtask list | I can keep the view clean |
+| US-06 | User | See "X/Y subtasks" text counter | I know exactly how many steps are done |
 
 ---
 
 ## User Flow
 
-### Adding Subtasks
-1. User opens the create or edit todo form
-2. A "Subtasks" section is visible at the bottom of the form
-3. User clicks "+ Add subtask" and types the subtask title
-4. Pressing Enter or clicking "Add" creates the subtask and focuses the next input
-5. Multiple subtasks can be added before saving
+### Creating Subtasks
+1. Locate a todo card in any section
+2. Click **"▶ Subtasks"** button to expand
+3. Enter subtask title in the input field
+4. Press **Enter** or click **"Add"** button
+5. Subtask appears immediately in the list
+6. Repeat for additional subtasks
 
-### Checking Off Subtasks
-1. On the todo detail view or within an expanded todo card, subtasks are listed as checkboxes
-2. User clicks a checkbox to toggle a subtask's completion
-3. Optimistic UI: checkbox toggles immediately
-4. API: `PATCH /api/todos/[todoId]/subtasks/[subtaskId]` with `{ completed: true/false }`
-5. Progress bar updates to reflect new completion percentage
+### Managing Subtasks
+- **Complete**: Click the checkbox next to a subtask → moves to completed state
+- **Uncomplete**: Click the checked checkbox → returns to incomplete
+- **Delete**: Click the **✕** button on the right side of a subtask
+- **Collapse**: Click **"▼ Subtasks"** to hide the subtask list (progress bar remains visible)
 
-### Progress Bar
-- Formula: `(completedSubtasks / totalSubtasks) * 100`
-- Shown on the todo card when `totalSubtasks > 0`
-- Color: green when 100%, blue/indigo otherwise
-- Text label: "X / Y subtasks"
-
-### Reordering Subtasks
-1. Subtasks have drag handles (or up/down arrow buttons)
-2. On reorder: `PUT /api/todos/[todoId]/subtasks/reorder` with ordered array of subtask IDs
-3. The `position` field of each subtask is updated accordingly
-
-### Deleting a Subtask
-1. User clicks the delete icon next to a subtask
-2. No confirmation needed (subtask deletion is low-risk)
-3. Subtask is removed from the list; progress bar recalculates
+### Progress Tracking
+- Progress bar and "X/Y subtasks" text always visible below the todo title (when subtasks exist), even when list is collapsed
+- Bar fills proportionally to completed/total subtasks
+- Updates in real-time after each subtask toggle
 
 ---
 
@@ -62,8 +51,8 @@ CREATE TABLE subtasks (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   todo_id    INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
   title      TEXT NOT NULL,
-  completed  INTEGER NOT NULL DEFAULT 0,
-  position   INTEGER NOT NULL DEFAULT 0,
+  completed  INTEGER NOT NULL DEFAULT 0,  -- 0 = false, 1 = true
+  position   INTEGER NOT NULL DEFAULT 0,  -- ordering index
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -75,170 +64,149 @@ CREATE INDEX idx_subtasks_todo_id ON subtasks(todo_id);
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/todos/[todoId]/subtasks` | List all subtasks for a todo |
-| POST | `/api/todos/[todoId]/subtasks` | Create a new subtask |
-| PATCH | `/api/todos/[todoId]/subtasks/[id]` | Toggle completion or update title |
-| PUT | `/api/todos/[todoId]/subtasks/reorder` | Reorder subtasks |
-| DELETE | `/api/todos/[todoId]/subtasks/[id]` | Delete a subtask |
+| GET | `/api/todos/[id]/subtasks` | List all subtasks for a todo |
+| POST | `/api/todos/[id]/subtasks` | Create a new subtask |
+| PUT | `/api/todos/[id]/subtasks/[subtaskId]` | Update subtask (toggle complete, rename) |
+| DELETE | `/api/todos/[id]/subtasks/[subtaskId]` | Delete a subtask |
 
-#### GET /api/todos/[todoId]/subtasks
-
-Response:
-```json
-{
-  "subtasks": [
-    {
-      "id": 1,
-      "todoId": 42,
-      "title": "Write unit tests",
-      "completed": false,
-      "position": 0,
-      "createdAt": "2025-11-11T10:00:00Z",
-      "updatedAt": "2025-11-11T10:00:00Z"
-    }
-  ]
-}
-```
-
-Ordered by `position ASC`.
-
-#### POST /api/todos/[todoId]/subtasks
-
-Request body:
-```json
-{ "title": "Write unit tests" }
-```
-
-Position is set to `MAX(position) + 1` for the given `todo_id`.
-Response: `201 Created` with new subtask.
-
-#### PATCH /api/todos/[todoId]/subtasks/[id]
-
-Request body:
-```json
-{ "completed": true }
-// or
-{ "title": "Updated title" }
-```
-
-Response: `200 OK` with updated subtask.
-
-#### PUT /api/todos/[todoId]/subtasks/reorder
-
-Request body:
-```json
-{ "orderedIds": [3, 1, 2] }
-```
-
-Updates `position` of each subtask based on array index.
-Response: `200 OK` with `{ success: true }`.
-
-#### DELETE /api/todos/[todoId]/subtasks/[id]
-
-Response: `204 No Content`.
-Positions are NOT renumbered on delete (gaps are acceptable; ordering is by position value).
-
-### Progress Calculation
+#### POST /api/todos/[id]/subtasks
 
 ```typescript
-// lib/subtasks.ts
-export interface SubtaskProgress {
-  total: number;
-  completed: number;
-  percentage: number; // 0–100, rounded to nearest integer
-}
+// Request body
+{ "title": "Write unit tests" }
 
-export function calculateProgress(subtasks: Subtask[]): SubtaskProgress {
-  const total = subtasks.length;
-  const completed = subtasks.filter((s) => s.completed).length;
-  const percentage = total === 0 ? 0 : Math.round((completed / total) * 100);
-  return { total, completed, percentage };
+// Response: 201 Created
+{
+  "id": 42,
+  "todo_id": 7,
+  "title": "Write unit tests",
+  "completed": false,
+  "position": 3,
+  "created_at": "2025-11-11T10:00:00Z",
+  "updated_at": "2025-11-11T10:00:00Z"
 }
+```
+
+#### PUT /api/todos/[id]/subtasks/[subtaskId]
+
+```typescript
+// Toggle completion
+{ "completed": true }
+
+// Response: 200 OK with updated subtask
+```
+
+#### DELETE /api/todos/[id]/subtasks/[subtaskId]
+
+Response: `204 No Content`
+
+### Database Operations (lib/db.ts)
+
+```typescript
+export const subtaskDB = {
+  getByTodoId: (todoId: number): Subtask[] =>
+    db.prepare('SELECT * FROM subtasks WHERE todo_id = ? ORDER BY position, created_at').all(todoId) as Subtask[],
+
+  create: (data: CreateSubtaskInput): Subtask => {
+    const maxPos = db.prepare('SELECT MAX(position) as m FROM subtasks WHERE todo_id = ?').get(data.todo_id) as { m: number | null };
+    const position = (maxPos.m ?? -1) + 1;
+    const now = getSingaporeNow().toISOString();
+    const result = db.prepare(
+      'INSERT INTO subtasks (todo_id, title, completed, position, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?)'
+    ).run(data.todo_id, data.title, position, now, now);
+    return subtaskDB.getById(result.lastInsertRowid as number);
+  },
+
+  update: (id: number, data: Partial<Subtask>): Subtask => {
+    const now = getSingaporeNow().toISOString();
+    db.prepare('UPDATE subtasks SET completed = ?, updated_at = ? WHERE id = ?')
+      .run(data.completed ? 1 : 0, now, id);
+    return subtaskDB.getById(id);
+  },
+
+  delete: (id: number): void => {
+    db.prepare('DELETE FROM subtasks WHERE id = ?').run(id);
+  },
+};
 ```
 
 ### TypeScript Types
 
 ```typescript
-// types/subtask.ts
+// lib/db.ts
 export interface Subtask {
   id: number;
-  todoId: number;
+  todo_id: number;
   title: string;
   completed: boolean;
   position: number;
-  createdAt: string;
-  updatedAt: string;
+  created_at: string;
+  updated_at: string;
 }
 
-export type CreateSubtaskInput = { title: string };
-export type UpdateSubtaskInput = Partial<Pick<Subtask, 'title' | 'completed'>>;
+export interface CreateSubtaskInput {
+  todo_id: number;
+  title: string;
+}
 
-// Extend Todo type
+// Extended Todo type used on client
 export interface TodoWithSubtasks extends Todo {
   subtasks: Subtask[];
 }
 ```
 
-### Cascade Delete Behavior
+### Progress Calculation
 
-`REFERENCES todos(id) ON DELETE CASCADE` ensures that when a parent todo is deleted, all its subtasks are automatically removed by SQLite. No application-level cascade code needed.
+```typescript
+// lib/progress.ts
+export function calculateProgress(subtasks: Subtask[]): { completed: number; total: number; percent: number } {
+  const total = subtasks.length;
+  const completed = subtasks.filter(s => s.completed).length;
+  const percent = total === 0 ? 0 : Math.round((completed / total) * 100);
+  return { completed, total, percent };
+}
+```
 
-### Validation Rules
+### Fetching Subtasks
 
-| Field | Rules |
-|-------|-------|
-| title | Required, 1–500 characters, trimmed |
-| completed | Boolean only |
-| position | Non-negative integer |
-| orderedIds | Array of integers, all must belong to the given `todo_id` |
+Subtasks are fetched alongside todos. The `GET /api/todos` response includes `subtasks` array for each todo, or subtasks are fetched lazily on expand. Recommended: eager load via JOIN for performance.
+
+```sql
+SELECT s.* FROM subtasks s WHERE s.todo_id IN (SELECT id FROM todos WHERE user_id = ?)
+ORDER BY s.todo_id, s.position, s.created_at
+```
+
+### Cascade Delete
+
+Defined via `ON DELETE CASCADE` on `subtasks.todo_id` FK. When a todo is deleted, all its subtasks are automatically removed — no application-level handling needed.
 
 ---
 
 ## UI Components
 
-### SubtaskList
+### Subtask Toggle Button (on todo card)
 ```tsx
-// Renders the list of subtasks for a todo
-// Props: subtasks: Subtask[], todoId: number
-//        onToggle, onDelete, onReorder, onAdd
-interface SubtaskListProps {
-  subtasks: Subtask[];
-  todoId: number;
-  onToggle: (id: number, completed: boolean) => void;
-  onDelete: (id: number) => void;
-  onAdd: (title: string) => void;
-}
+// "▶ Subtasks" (collapsed) / "▼ Subtasks" (expanded)
+// Shows (X) count when collapsed: "▶ Subtasks (3)"
+// Located on right side of todo card
 ```
 
-### SubtaskItem
+### Progress Bar + Counter (always visible when subtasks exist)
 ```tsx
-// Individual subtask row: checkbox, title, drag handle, delete button
-// Completed subtask: strikethrough title, muted color
-interface SubtaskItemProps {
-  subtask: Subtask;
-  onToggle: (completed: boolean) => void;
-  onDelete: () => void;
-}
+// Below todo title, above the expand/collapse area
+// Blue progress bar: width = `${percent}%`
+// Text: "3/7 subtasks" — updates in real-time
+// Visible even when subtask list is collapsed
 ```
 
-### SubtaskProgressBar
+### Subtask List (shown when expanded)
 ```tsx
-// Visual progress bar + "X / Y subtasks" label
-// Props: progress: SubtaskProgress
-// Color: indigo normally, green at 100%
-interface SubtaskProgressBarProps {
-  progress: SubtaskProgress;
-}
-```
-
-### SubtaskAddInput
-```tsx
-// Inline input for adding a new subtask
-// Submits on Enter key or Add button click
-// Clears and focuses after submission
-interface SubtaskAddInputProps {
-  onAdd: (title: string) => void;
-}
+// Each subtask row:
+//   [ checkbox ] [ title ] [ ✕ delete button ]
+// Completed subtasks: strikethrough text, muted color
+// Add subtask form at the bottom:
+//   [ text input ] [ Add button ]
+//   Pressing Enter also adds
 ```
 
 ---
@@ -247,34 +215,30 @@ interface SubtaskAddInputProps {
 
 | Scenario | Handling |
 |----------|----------|
-| Todo has no subtasks | Progress bar is hidden; no "0/0 subtasks" shown |
-| All subtasks completed | Progress bar shows 100%, colored green |
-| Subtask title is whitespace only | Validation error: "Subtask title is required" |
-| Deleting last subtask | Progress bar disappears; parent todo unchanged |
-| Reorder request with missing IDs | 400 Bad Request: "orderedIds must contain all subtask IDs for this todo" |
-| Reorder request with foreign subtask IDs | 400 Bad Request: "Subtask does not belong to this todo" |
-| Parent todo deleted | All subtasks cascade deleted (FK constraint) |
-| 100+ subtasks on one todo | List is scrollable; no pagination needed at this scale |
-| Recurring todo completion copies subtasks | All subtasks copied to new instance with `completed = false` (see PRP 03) |
+| Subtask title is empty | Validation rejects; show inline error |
+| Parent todo deleted | All subtasks CASCADE deleted automatically |
+| 0 subtasks | Progress bar and counter not shown at all |
+| All subtasks completed | Progress bar shows 100% (full blue) |
+| Completing subtask doesn't auto-complete parent | Parent completion is independent |
+| Recurring todo completion | Subtasks are NOT copied to next instance (start fresh) |
+| Subtask on a completed todo | Still manageable (user can uncomplete parent to re-work) |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] Subtasks section is visible in the todo form (create and edit)
-- [ ] User can add multiple subtasks before saving
-- [ ] Subtasks are listed ordered by `position`
-- [ ] User can toggle subtask completion via checkbox
-- [ ] Optimistic UI updates checkbox without waiting for API
-- [ ] Progress bar shows correct percentage (e.g., "2 / 4 subtasks", 50%)
-- [ ] Progress bar is hidden when todo has no subtasks
-- [ ] Progress bar turns green at 100%
-- [ ] User can delete a subtask (no confirmation required)
-- [ ] Deleting parent todo removes all subtasks (cascade)
-- [ ] Subtask title max 500 characters enforced
-- [ ] Empty subtask title is rejected with validation error
-- [ ] Reorder updates positions correctly
-- [ ] `ON DELETE CASCADE` verified by DB constraint test
+- [ ] "▶ Subtasks" button visible on every todo card
+- [ ] Clicking expands/collapses subtask list
+- [ ] Can add a subtask by pressing Enter or clicking "Add"
+- [ ] Empty subtask title is rejected
+- [ ] Subtask checkbox toggles completion (strikethrough when done)
+- [ ] "✕" button deletes a subtask immediately
+- [ ] Progress bar visible below todo title (when subtasks exist)
+- [ ] Progress bar % updates in real-time after toggle
+- [ ] "X/Y subtasks" text shows correct counts
+- [ ] Progress bar and counter remain visible when list is collapsed
+- [ ] Deleting parent todo removes all its subtasks (CASCADE)
+- [ ] Subtasks included in search (feature 08)
 
 ---
 
@@ -283,25 +247,24 @@ interface SubtaskAddInputProps {
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/subtasks.spec.ts
-
-test('add subtask to existing todo', async ({ page }) => { /* ... */ });
-test('multiple subtasks can be added', async ({ page }) => { /* ... */ });
-test('toggle subtask completion', async ({ page }) => { /* ... */ });
-test('progress bar shows 50% with 1 of 2 complete', async ({ page }) => { /* ... */ });
-test('progress bar shows 100% and turns green', async ({ page }) => { /* ... */ });
-test('delete subtask', async ({ page }) => { /* ... */ });
-test('delete parent todo removes subtasks', async ({ page }) => { /* ... */ });
-test('empty subtask title shows validation error', async ({ page }) => { /* ... */ });
+// tests/05-subtasks.spec.ts
+test('add subtask to a todo');
+test('subtask appears in expanded list');
+test('toggle subtask complete shows strikethrough');
+test('progress bar updates after toggle');
+test('X/Y subtasks text updates correctly');
+test('delete subtask removes it from list');
+test('collapse hides subtask list but shows progress');
+test('empty subtask title is rejected');
 ```
 
 ### Unit Tests
 
 ```typescript
-// tests/unit/subtasks.test.ts
-test('calculateProgress: 0/0 returns 0%');
-test('calculateProgress: 1/2 returns 50%');
-test('calculateProgress: 4/4 returns 100%');
+// tests/unit/progress.test.ts
+test('calculateProgress: 0 subtasks returns 0%');
+test('calculateProgress: all completed returns 100%');
+test('calculateProgress: partial returns correct percent');
 test('calculateProgress: rounds to nearest integer');
 ```
 
@@ -309,16 +272,7 @@ test('calculateProgress: rounds to nearest integer');
 
 ## Out of Scope
 
-- Nested subtasks (sub-subtasks)
+- Drag-and-drop reorder of subtasks
+- Nested subtasks (subtasks of subtasks)
 - Subtask due dates or priorities
-- Subtask assignments to users
-- Bulk toggle (complete all subtasks at once)
-
----
-
-## Success Metrics
-
-- Progress bar updates within one render cycle of subtask toggle
-- Cascade delete verified via DB constraint (not application code)
-- All subtask operations covered by E2E tests
-- Subtask list renders within 200 ms for up to 50 subtasks
+- Copying subtasks to next recurring instance

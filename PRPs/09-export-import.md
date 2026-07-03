@@ -2,7 +2,7 @@
 
 ## Feature Overview
 
-Allows users to export their entire todo dataset as a JSON backup file and restore it by importing the file. The import process performs ID remapping to avoid conflicts with existing data, preserves relationships (tags, subtasks, todo_tags), and validates the incoming data before writing to the database.
+Backup and restore todos using JSON export/import. An additional CSV export provides spreadsheet-friendly output for analysis. On import, new IDs are assigned so data links to the importing user without conflicts. The export is a full snapshot; import creates new todos alongside existing ones (no merge/upsert).
 
 ---
 
@@ -10,306 +10,226 @@ Allows users to export their entire todo dataset as a JSON backup file and resto
 
 | ID | As a... | I want to... | So that... |
 |----|---------|-------------|-----------|
-| US-01 | User | Export all my todos to a JSON file | I can back up my data or move it to another instance |
-| US-02 | User | Import a previously exported JSON file | I can restore my todos after data loss or migration |
-| US-03 | User | Have imported todos avoid ID conflicts | Imported data doesn't overwrite existing todos |
-| US-04 | User | Have tag and subtask relationships preserved on import | My structured data is correctly restored |
-| US-05 | User | Receive clear feedback if the import file is invalid | I know when my file is corrupted or wrong format |
+| US-01 | User | Export my todos as a JSON file | I have a complete backup |
+| US-02 | User | Import todos from a JSON file | I can restore data or transfer to another device |
+| US-03 | User | Export my todos as a CSV file | I can analyze data in a spreadsheet |
+| US-04 | User | See a success count after import | I know how many todos were imported |
+| US-05 | User | Be warned if the file is invalid | I don't get silent failures |
 
 ---
 
 ## User Flow
 
-### Export
-1. User navigates to Settings or finds an "Export" button in the toolbar
-2. User clicks "Export Todos"
-3. The browser downloads a file named `todos-backup-YYYY-MM-DD.json`
-4. The file contains all todos, tags, subtasks, and tag assignments
-5. A success toast: "Exported [N] todos"
+### JSON Export
+1. Click **"Export JSON"** button (green, top-right of page)
+2. File downloads automatically
+3. Filename format: `todos-YYYY-MM-DD.json`
+
+### CSV Export
+1. Click **"Export CSV"** button (dark green, top-right)
+2. File downloads automatically
+3. Filename format: `todos-YYYY-MM-DD.csv`
 
 ### Import
-1. User clicks "Import Todos"
-2. A file picker opens (accepts `.json` only)
-3. User selects the backup file
-4. A preview modal shows: "This file contains [N] todos, [M] tags, [K] subtasks"
-5. User clicks "Import"
-6. The API processes the file:
-   a. Validates the JSON structure
-   b. Imports tags (creates new tags for names not already in the DB; maps existing by name)
-   c. Imports todos with new IDs (ID remapping)
-   d. Imports subtasks with remapped `todo_id`
-   e. Creates `todo_tags` rows with remapped IDs
-7. Success toast: "Imported [N] todos, [M] tags"
-8. The todo list refreshes
+1. Click **"Import"** button (blue, top-right)
+2. File picker opens (accepts `.json` files)
+3. User selects a previously exported JSON file
+4. App validates and processes the file
+5. Success: toast "Successfully imported X todos"; list refreshes
+6. Error: toast "Failed to import todos. Please check the file format."
 
 ---
 
 ## Technical Requirements
 
-### Export Format (JSON Schema)
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/todos/export` | Download todos as JSON or CSV |
+| POST | `/api/todos/import` | Import todos from JSON body |
+
+#### GET /api/todos/export
+
+Query parameter: `?format=json` (default) or `?format=csv`
 
 ```typescript
-// types/backup.ts
-export interface BackupFile {
-  version: string;         // e.g., "1.0"
-  exportedAt: string;      // ISO 8601 UTC
-  todos: BackupTodo[];
-  tags: BackupTag[];
-}
+// app/api/todos/export/route.ts
+export async function GET(request: NextRequest) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
-export interface BackupTodo {
-  id: number;              // original ID (used for relationship mapping in file only)
-  title: string;
-  description: string | null;
-  completed: boolean;
-  dueDate: string | null;
-  priority: 'high' | 'medium' | 'low';
-  recurring: boolean;
-  recurrenceType: string | null;
-  reminderEnabled: boolean;
-  reminderLeadTime: string | null;
-  createdAt: string;
-  completedAt: string | null;
-  tagIds: number[];        // references BackupTag.id
-  subtasks: BackupSubtask[];
-}
+  const format = request.nextUrl.searchParams.get('format') ?? 'json';
+  const todos = todoDB.getByUserId(session.userId);
+  const date = formatSingaporeDate(getSingaporeNow(), 'yyyy-MM-dd');
 
-export interface BackupSubtask {
-  title: string;
-  completed: boolean;
-  position: number;
-}
+  if (format === 'csv') {
+    const csv = convertTodosToCSV(todos);
+    return new Response(csv, {
+      headers: {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="todos-${date}.csv"`,
+      },
+    });
+  }
 
-export interface BackupTag {
-  id: number;              // original ID
-  name: string;
-  color: string;
-}
-```
-
-Example file:
-```json
-{
-  "version": "1.0",
-  "exportedAt": "2025-11-15T10:00:00Z",
-  "todos": [
-    {
-      "id": 1,
-      "title": "Buy groceries",
-      "description": null,
-      "completed": false,
-      "dueDate": "2025-11-16T00:00:00+08:00",
-      "priority": "medium",
-      "recurring": false,
-      "recurrenceType": null,
-      "reminderEnabled": false,
-      "reminderLeadTime": null,
-      "createdAt": "2025-11-11T10:00:00Z",
-      "completedAt": null,
-      "tagIds": [2],
-      "subtasks": [
-        { "title": "Milk", "completed": false, "position": 0 },
-        { "title": "Bread", "completed": false, "position": 1 }
-      ]
-    }
-  ],
-  "tags": [
-    { "id": 2, "name": "Errands", "color": "#f59e0b" }
-  ]
-}
-```
-
-### Export API
-
-#### GET /api/export
-
-Generates and returns the backup JSON.
-
-```typescript
-// app/api/export/route.ts
-export async function GET() {
-  const db = getDb();
-  const todos = db.prepare('SELECT * FROM todos').all();
-  const tags = db.prepare('SELECT * FROM tags').all();
-  const todoTags = db.prepare('SELECT * FROM todo_tags').all();
-  const subtasks = db.prepare('SELECT * FROM subtasks').all();
-
-  // Build backup structure
-  const backup: BackupFile = {
-    version: '1.0',
-    exportedAt: new Date().toISOString(),
-    tags: tags.map(/* map to BackupTag */),
-    todos: todos.map((todo) => ({
-      /* map fields */
-      tagIds: todoTags.filter((tt) => tt.todo_id === todo.id).map((tt) => tt.tag_id),
-      subtasks: subtasks
-        .filter((s) => s.todo_id === todo.id)
-        .sort((a, b) => a.position - b.position)
-        .map(/* map to BackupSubtask */),
-    })),
-  };
-
-  const json = JSON.stringify(backup, null, 2);
+  // JSON format
+  const json = JSON.stringify(todos, null, 2);
   return new Response(json, {
     headers: {
       'Content-Type': 'application/json',
-      'Content-Disposition': `attachment; filename="todos-backup-${
-        new Date().toISOString().slice(0, 10)
-      }.json"`,
+      'Content-Disposition': `attachment; filename="todos-${date}.json"`,
     },
   });
 }
 ```
 
-### Import API
-
-#### POST /api/import
-
-Accepts a `multipart/form-data` request with the JSON file, or a `application/json` body with the parsed content.
+#### POST /api/todos/import
 
 ```typescript
-// app/api/import/route.ts
-export async function POST(request: Request) {
-  const body: BackupFile = await request.json();
+// app/api/todos/import/route.ts
+export async function POST(request: NextRequest) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
-  // 1. Validate
-  validateBackupFile(body); // throws if invalid
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON format' }, { status: 400 });
+  }
 
-  const db = getDb();
+  if (!Array.isArray(body)) {
+    return NextResponse.json({ error: 'Expected an array of todos' }, { status: 400 });
+  }
 
-  // 2. Import tags — use DB transaction for atomicity
-  const tagIdMap = new Map<number, number>(); // oldId → newId
+  const now = getSingaporeNow().toISOString();
+  let count = 0;
 
-  const importAll = db.transaction(() => {
-    for (const tag of body.tags) {
-      const existing = db
-        .prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE')
-        .get(tag.name);
-      if (existing) {
-        tagIdMap.set(tag.id, (existing as any).id);
-      } else {
-        const result = db
-          .prepare('INSERT INTO tags (name, color, created_at, updated_at) VALUES (?, ?, ?, ?)')
-          .run(tag.name, tag.color, new Date().toISOString(), new Date().toISOString());
-        tagIdMap.set(tag.id, result.lastInsertRowid as number);
-      }
-    }
+  for (const item of body) {
+    if (!item.title || typeof item.title !== 'string') continue; // skip invalid
+    todoDB.create({
+      user_id: session.userId,
+      title: item.title,
+      completed: item.completed ? 1 : 0,
+      due_date: item.due_date ?? null,
+      priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium',
+      is_recurring: item.is_recurring ? 1 : 0,
+      recurrence_pattern: item.recurrence_pattern ?? null,
+      reminder_minutes: item.reminder_minutes ?? null,
+      created_at: item.created_at ?? now,
+      updated_at: now,
+      completed_at: item.completed_at ?? null,
+    });
+    count++;
+  }
 
-    // 3. Import todos — new IDs (no explicit id)
-    const todoIdMap = new Map<number, number>(); // oldId → newId
-    const now = new Date().toISOString();
-
-    for (const todo of body.todos) {
-      const result = db
-        .prepare(
-          `INSERT INTO todos (title, description, completed, due_date, priority,
-            recurring, recurrence_type, reminder_enabled, reminder_lead_time,
-            created_at, updated_at, completed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          todo.title, todo.description, todo.completed ? 1 : 0, todo.dueDate,
-          todo.priority, todo.recurring ? 1 : 0, todo.recurrenceType,
-          todo.reminderEnabled ? 1 : 0, todo.reminderLeadTime,
-          todo.createdAt, now, todo.completedAt
-        );
-      const newTodoId = result.lastInsertRowid as number;
-      todoIdMap.set(todo.id, newTodoId);
-
-      // 4. Import subtasks
-      for (const subtask of todo.subtasks) {
-        db.prepare(
-          `INSERT INTO subtasks (todo_id, title, completed, position, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(newTodoId, subtask.title, subtask.completed ? 1 : 0, subtask.position, now, now);
-      }
-
-      // 5. Import tag assignments
-      for (const oldTagId of todo.tagIds) {
-        const newTagId = tagIdMap.get(oldTagId);
-        if (newTagId) {
-          db.prepare('INSERT OR IGNORE INTO todo_tags (todo_id, tag_id) VALUES (?, ?)')
-            .run(newTodoId, newTagId);
-        }
-      }
-    }
-  });
-
-  importAll(); // executes atomically
-
-  return Response.json({
-    imported: {
-      todos: body.todos.length,
-      tags: body.tags.length,
-      subtasks: body.todos.reduce((sum, t) => sum + t.subtasks.length, 0),
-    },
-  }, { status: 201 });
+  return NextResponse.json({ message: `Successfully imported ${count} todos`, count });
 }
 ```
 
-### Validation
+### JSON Export Format
+
+```json
+[
+  {
+    "id": 1,
+    "title": "Sample Todo",
+    "completed": false,
+    "due_date": "2025-11-10T14:00:00+08:00",
+    "priority": "high",
+    "is_recurring": true,
+    "recurrence_pattern": "weekly",
+    "reminder_minutes": 60,
+    "created_at": "2025-11-02T10:30:00Z",
+    "updated_at": "2025-11-02T10:30:00Z",
+    "completed_at": null
+  }
+]
+```
+
+### CSV Export Format
+
+```
+ID,Title,Completed,Due Date,Priority,Recurring,Pattern,Reminder (min),Created At
+1,"Sample Todo",false,"2025-11-10T14:00:00+08:00","high",true,"weekly",60,"2025-11-02T10:30:00Z"
+```
 
 ```typescript
-// lib/import-validation.ts
-export function validateBackupFile(data: unknown): void {
-  if (typeof data !== 'object' || data === null) {
-    throw new Error('Invalid backup file: must be a JSON object');
-  }
-  const file = data as Record<string, unknown>;
-
-  if (file.version !== '1.0') {
-    throw new Error(`Unsupported backup version: ${file.version}`);
-  }
-  if (!Array.isArray(file.todos)) {
-    throw new Error('Invalid backup file: "todos" must be an array');
-  }
-  if (!Array.isArray(file.tags)) {
-    throw new Error('Invalid backup file: "tags" must be an array');
-  }
-
-  for (const todo of file.todos as unknown[]) {
-    if (typeof (todo as any).title !== 'string' || !(todo as any).title.trim()) {
-      throw new Error('Invalid todo: title must be a non-empty string');
-    }
-    // Additional field validation...
-  }
+// lib/export.ts
+export function convertTodosToCSV(todos: Todo[]): string {
+  const headers = ['ID', 'Title', 'Completed', 'Due Date', 'Priority', 'Recurring', 'Pattern', 'Reminder (min)', 'Created At'];
+  const rows = todos.map(t => [
+    t.id,
+    `"${t.title.replace(/"/g, '""')}"`,  // escape quotes
+    t.completed,
+    t.due_date ?? '',
+    t.priority,
+    t.is_recurring,
+    t.recurrence_pattern ?? '',
+    t.reminder_minutes ?? '',
+    t.created_at,
+  ]);
+  return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
 }
 ```
+
+### Client-Side Import Handler
+
+```typescript
+// In app/page.tsx
+async function handleImport(event: React.ChangeEvent<HTMLInputElement>) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const res = await fetch('/api/todos/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Import failed');
+    const { count } = await res.json();
+    setSuccessMessage(`Successfully imported ${count} todos`);
+    await fetchTodos(); // refresh list
+  } catch {
+    setErrorMessage('Failed to import todos. Please check the file format.');
+  }
+  // Reset file input so same file can be re-selected
+  event.target.value = '';
+}
+```
+
+### TypeScript Types
+
+No new types needed beyond existing `Todo` interface. Import accepts a partial todo shape and fills defaults.
 
 ---
 
 ## UI Components
 
-### ExportButton
+### Export Buttons (top-right of page)
 ```tsx
-// Button that triggers the export download
-// Shows loading state while generating
-// On success: toast "Exported N todos"
+// "Export JSON" — green button
+// "Export CSV"  — dark green button
+// Both trigger file download via API link: href="/api/todos/export?format=json"
+// Or via fetch + Blob URL for more control
 ```
 
-### ImportButton
+### Import Button (top-right of page)
 ```tsx
-// Button that opens the file picker
-// Accepts: .json files only
-// On file selected: reads file and calls import API
+// "Import" — blue button
+// Hidden <input type="file" accept=".json"> triggered on click
+// onChange → handleImport()
 ```
 
-### ImportPreviewModal
+### Success / Error Toast Messages
 ```tsx
-// Modal shown before confirming import
-// Shows: N todos, M tags, K subtasks in the file
-// "Import" and "Cancel" buttons
-interface ImportPreviewModalProps {
-  stats: { todos: number; tags: number; subtasks: number };
-  onConfirm: () => void;
-  onCancel: () => void;
-}
-```
-
-### ImportResultToast
-```tsx
-// Success: "Imported 15 todos, 3 tags"
-// Error: "Import failed: [error message]"
+// Green toast: "Successfully imported X todos"
+// Red toast: "Failed to import todos. Please check the file format."
+// Auto-dismiss after 3 seconds
 ```
 
 ---
@@ -318,34 +238,29 @@ interface ImportPreviewModalProps {
 
 | Scenario | Handling |
 |----------|----------|
-| File is not valid JSON | Parse error caught; user shown "Invalid JSON file" |
-| Backup version mismatch | Error: "Unsupported backup version" |
-| Tag name already exists in DB | Map to existing tag by name (do not duplicate) |
-| `tagIds` references a tag not in the file | Skip the tag assignment; log warning |
-| Todo has `recurring = true` but `recurrenceType = null` | Import as non-recurring (normalize the inconsistency) |
-| Empty backup file (0 todos) | Valid; import succeeds; toast: "Imported 0 todos" |
-| Very large file (10,000 todos) | Processed inside a single DB transaction; may take a few seconds |
-| Partial import failure | Transaction rollback; all-or-nothing semantics |
-| File exceeds 50 MB | Reject with 413 Payload Too Large before parsing |
+| Invalid JSON in import file | Return 400 "Invalid JSON format"; show error toast |
+| Import file not an array | Return 400 "Expected an array of todos" |
+| Todo in import missing title | Skip that item (counted as skipped, not error) |
+| Import todo with invalid priority | Default to 'medium' |
+| Import todo with invalid recurrence_pattern | Set to null |
+| Importing the same file twice | Creates duplicates (import creates new, never deduplicates) |
+| Very large export file (>500 todos) | Stream JSON response; no file size limit enforced |
+| CSV import not supported | Only JSON can be imported; CSV is export-only |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] "Export Todos" button downloads a `.json` file named `todos-backup-YYYY-MM-DD.json`
-- [ ] Exported file contains all todos, tags, subtasks, and tag assignments
-- [ ] `version: "1.0"` is present in the exported file
-- [ ] "Import Todos" button opens a file picker accepting `.json` only
-- [ ] Import preview modal shows count of todos, tags, subtasks
-- [ ] Import creates new todos with new IDs (no overwrite of existing)
-- [ ] Existing tags matched by name (case-insensitive); not duplicated
-- [ ] Subtasks imported and linked to correct new todo IDs
-- [ ] Tag assignments imported with remapped IDs
-- [ ] Import is atomic — partial failure rolls back entirely
-- [ ] Invalid JSON shows error: "Invalid JSON file"
-- [ ] Unsupported version shows error: "Unsupported backup version"
-- [ ] Success toast shows count of imported todos and tags
-- [ ] Todo list refreshes after successful import
+- [ ] "Export JSON" button downloads a `.json` file with correct filename
+- [ ] "Export CSV" button downloads a `.csv` file with correct filename
+- [ ] Exported JSON can be re-imported successfully
+- [ ] "Import" button opens file picker (`.json` only)
+- [ ] After import, todo list refreshes and new todos appear
+- [ ] Success toast shows count of imported todos
+- [ ] Error toast shown for invalid file format
+- [ ] Import creates NEW todos (does not update existing ones)
+- [ ] Imported todos linked to importing user's account
+- [ ] Tags and subtasks NOT included in basic import/export (documented limitation)
 
 ---
 
@@ -354,45 +269,31 @@ interface ImportPreviewModalProps {
 ### E2E Tests (Playwright)
 
 ```typescript
-// tests/export-import.spec.ts
-
-test('export creates downloadable JSON file', async ({ page }) => { /* ... */ });
-test('exported file contains all todos and tags', async ({ page }) => { /* ... */ });
-test('import restores todos from backup', async ({ page }) => { /* ... */ });
-test('import avoids duplicate tags by name', async ({ page }) => { /* ... */ });
-test('import assigns new IDs to todos', async ({ page }) => { /* ... */ });
-test('import preserves subtasks', async ({ page }) => { /* ... */ });
-test('import preserves tag assignments', async ({ page }) => { /* ... */ });
-test('invalid JSON shows error message', async ({ page }) => { /* ... */ });
-test('round-trip: export then import restores all data', async ({ page }) => { /* ... */ });
+// tests/09-export-import.spec.ts
+test('export JSON downloads file with correct name');
+test('export CSV downloads file with correct name');
+test('import valid JSON creates todos in list');
+test('import shows success message with count');
+test('import invalid JSON shows error message');
+test('import missing title field skips that item');
 ```
 
 ### Unit Tests
 
 ```typescript
-// tests/unit/import-validation.test.ts
-test('validateBackupFile: passes valid backup');
-test('validateBackupFile: throws on non-object input');
-test('validateBackupFile: throws on unsupported version');
-test('validateBackupFile: throws on missing todos array');
-test('validateBackupFile: throws on todo with empty title');
+// tests/unit/export.test.ts
+test('convertTodosToCSV: correct headers');
+test('convertTodosToCSV: escapes quotes in titles');
+test('convertTodosToCSV: empty todos returns headers only');
 ```
 
 ---
 
 ## Out of Scope
 
-- CSV export/import
-- Selective export (export only completed or specific tags)
-- Cloud backup / sync (e.g., Google Drive)
-- Incremental / differential backups
-- Merging strategies (e.g., "overwrite on conflict")
-
----
-
-## Success Metrics
-
-- Export of 1000 todos completes in < 2 seconds
-- Import of 1000 todos completes in < 5 seconds
-- Round-trip (export → import) preserves 100% of data
-- Atomic import: zero partial states in DB after failure
+- CSV import
+- Tags in export/import
+- Subtasks in export/import
+- Merge/upsert (import always creates new)
+- Conflict detection on import
+- Import progress indicator for large files
