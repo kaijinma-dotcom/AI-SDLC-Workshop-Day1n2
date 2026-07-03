@@ -82,6 +82,33 @@ export interface Tag {
   created_at: string;
 }
 
+export interface Template {
+  id: number;
+  user_id: number;
+  name: string;
+  title_template: string;
+  description: string | null;
+  category: string | null;
+  priority: Priority;
+  is_recurring: boolean;
+  recurrence_pattern: RecurrencePattern | null;
+  reminder_minutes: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTemplateInput {
+  user_id: number;
+  name: string;
+  title_template: string;
+  description?: string | null;
+  category?: string | null;
+  priority: Priority;
+  is_recurring: boolean;
+  recurrence_pattern?: RecurrencePattern | null;
+  reminder_minutes?: number | null;
+}
+
 // ─── Database Initialisation ────────────────────────────────────────────────
 
 const DB_PATH = path.join(process.cwd(), 'todos.db');
@@ -169,6 +196,23 @@ function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_tags_user_id ON tags(user_id);
     CREATE INDEX IF NOT EXISTS idx_todo_tags_todo_id ON todo_tags(todo_id);
     CREATE INDEX IF NOT EXISTS idx_todo_tags_tag_id ON todo_tags(tag_id);
+
+    CREATE TABLE IF NOT EXISTS templates (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name               TEXT NOT NULL,
+      title_template     TEXT NOT NULL,
+      description        TEXT,
+      category           TEXT,
+      priority           TEXT NOT NULL DEFAULT 'medium',
+      is_recurring       INTEGER NOT NULL DEFAULT 0,
+      recurrence_pattern TEXT,
+      reminder_minutes   INTEGER,
+      created_at         TEXT NOT NULL,
+      updated_at         TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_templates_user_id ON templates(user_id);
   `);
 }
 
@@ -651,4 +695,73 @@ export const tagDB = {
       const insert = db.prepare('INSERT INTO todo_tags (todo_id, tag_id) VALUES (?, ?)');
       tagIds.forEach((tagId) => insert.run(todoId, tagId));
     }
+  },
+};
 
+// ─── Template DB ──────────────────────────────────────────────────────────────
+
+function rowToTemplate(row: Record<string, unknown>): Template {
+  return {
+    id: row.id as number,
+    user_id: row.user_id as number,
+    name: row.name as string,
+    title_template: row.title_template as string,
+    description: (row.description as string | null) ?? null,
+    category: (row.category as string | null) ?? null,
+    priority: (row.priority as Priority) ?? 'medium',
+    is_recurring: (row.is_recurring as number) === 1,
+    recurrence_pattern: (row.recurrence_pattern as RecurrencePattern | null) ?? null,
+    reminder_minutes: (row.reminder_minutes as number | null) ?? null,
+    created_at: row.created_at as string,
+    updated_at: row.updated_at as string,
+  };
+}
+
+export const templateDB = {
+  getByUserId(userId: number): Template[] {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT * FROM templates WHERE user_id = ? ORDER BY name')
+      .all(userId) as Record<string, unknown>[];
+    return rows.map(rowToTemplate);
+  },
+
+  getById(id: number, userId: number): Template | null {
+    const db = getDb();
+    const row = db
+      .prepare('SELECT * FROM templates WHERE id = ? AND user_id = ?')
+      .get(id, userId) as Record<string, unknown> | null;
+    return row ? rowToTemplate(row) : null;
+  },
+
+  create(data: CreateTemplateInput): Template {
+    const db = getDb();
+    const now = nowISO();
+    const result = db
+      .prepare(
+        `INSERT INTO templates
+         (user_id, name, title_template, description, category, priority,
+          is_recurring, recurrence_pattern, reminder_minutes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        data.user_id,
+        data.name.trim(),
+        data.title_template.trim(),
+        data.description?.trim() ?? null,
+        data.category?.trim() ?? null,
+        data.priority,
+        data.is_recurring ? 1 : 0,
+        data.recurrence_pattern ?? null,
+        data.reminder_minutes ?? null,
+        now,
+        now
+      );
+    return this.getById(result.lastInsertRowid as number, data.user_id)!;
+  },
+
+  delete(id: number, userId: number): void {
+    const db = getDb();
+    db.prepare('DELETE FROM templates WHERE id = ? AND user_id = ?').run(id, userId);
+  },
+};

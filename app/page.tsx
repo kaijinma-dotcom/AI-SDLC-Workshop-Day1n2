@@ -9,7 +9,7 @@ import {
 } from '@/lib/priority';
 import { LEAD_TIME_OPTIONS, getReminderBadge } from '@/lib/reminders';
 import { useNotifications, requestNotificationPermission } from '@/lib/hooks/useNotifications';
-import type { Priority, RecurrencePattern, Subtask, Tag, Todo } from '@/lib/db';
+import type { Priority, RecurrencePattern, Subtask, Tag, Template, Todo } from '@/lib/db';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -364,6 +364,206 @@ function SubtaskSection({ todo, onSubtasksChange }: SubtaskSectionProps) {
   );
 }
 
+// ─── SaveTemplateModal ────────────────────────────────────────────────────────
+
+interface SaveTemplateModalProps {
+  titleTemplate: string;
+  priority: Priority;
+  isRecurring: boolean;
+  recurrencePattern: RecurrencePattern | null;
+  reminderMinutes: number | null;
+  onClose: () => void;
+  onSaved: (template: Template) => void;
+}
+
+function SaveTemplateModal({
+  titleTemplate,
+  priority,
+  isRecurring,
+  recurrencePattern,
+  reminderMinutes,
+  onClose,
+  onSaved,
+}: SaveTemplateModalProps) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [category, setCategory] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSave() {
+    const trimmedName = name.trim();
+    if (!trimmedName) { setError('Template name is required'); return; }
+    setSaving(true);
+    setError('');
+    const res = await fetch('/api/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: trimmedName,
+        title_template: titleTemplate,
+        description: description.trim() || null,
+        category: category.trim() || null,
+        priority,
+        is_recurring: isRecurring,
+        recurrence_pattern: isRecurring ? recurrencePattern : null,
+        reminder_minutes: reminderMinutes,
+      }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const err = await res.json();
+      setError(err.error ?? 'Failed to save template');
+      return;
+    }
+    const template: Template = await res.json();
+    onSaved(template);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 dark:bg-black/60">
+      <div className="w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-2xl">
+        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">💾 Save as Template</h2>
+
+        {error && (
+          <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">{error}</div>
+        )}
+
+        <div className="mb-3 rounded-lg bg-gray-50 dark:bg-gray-700/50 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-0.5">
+          <div><span className="font-medium">Title:</span> {titleTemplate}</div>
+          <div><span className="font-medium">Priority:</span> {priority}</div>
+          {isRecurring && recurrencePattern && (
+            <div><span className="font-medium">Repeat:</span> {recurrencePattern}</div>
+          )}
+          {reminderMinutes !== null && (
+            <div><span className="font-medium">Reminder:</span> {reminderMinutes} min before</div>
+          )}
+        </div>
+
+        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Template Name *</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={100}
+          placeholder="e.g. Weekly Report"
+          className="mb-3 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+        />
+
+        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Description (optional)</label>
+        <input
+          type="text"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          maxLength={200}
+          placeholder="What is this template for?"
+          className="mb-3 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+
+        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Category (optional)</label>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="mb-5 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">No category</option>
+          <option value="Work">Work</option>
+          <option value="Personal">Personal</option>
+          <option value="Finance">Finance</option>
+          <option value="Health">Health</option>
+          <option value="Education">Education</option>
+        </select>
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">Cancel</button>
+          <button onClick={handleSave} disabled={saving || !name.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {saving ? 'Saving...' : 'Save Template'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TemplateManagerModal ─────────────────────────────────────────────────────
+
+interface TemplateManagerModalProps {
+  templates: Template[];
+  onClose: () => void;
+  onUse: (template: Template) => void;
+  onDelete: (templateId: number) => void;
+}
+
+function TemplateManagerModal({ templates, onClose, onUse, onDelete }: TemplateManagerModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 dark:bg-black/60">
+      <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-2xl max-h-[85vh] overflow-y-auto">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">📋 Templates</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none">&times;</button>
+        </div>
+
+        {templates.length === 0 ? (
+          <p className="py-8 text-center text-sm text-gray-400 dark:text-gray-500">
+            No templates yet. Fill out the todo form and click &quot;💾 Save as Template&quot;.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {templates.map((tmpl) => {
+              const pc = PRIORITY_CONFIG[tmpl.priority];
+              return (
+                <div key={tmpl.id} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/40 px-4 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-sm text-gray-900 dark:text-white">{tmpl.name}</p>
+                      {tmpl.description && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{tmpl.description}</p>
+                      )}
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        {tmpl.category && (
+                          <span className="rounded-full bg-indigo-100 dark:bg-indigo-900/30 border border-indigo-300 dark:border-indigo-700 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:text-indigo-400">
+                            {tmpl.category}
+                          </span>
+                        )}
+                        <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${pc.bgColor} ${pc.color} ${pc.borderColor}`}>
+                          {pc.label}
+                        </span>
+                        {tmpl.is_recurring && tmpl.recurrence_pattern && (
+                          <span className="rounded-full border border-purple-300 dark:border-purple-700 bg-purple-100 dark:bg-purple-900/30 px-2 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-400">
+                            🔄 {tmpl.recurrence_pattern}
+                          </span>
+                        )}
+                        {tmpl.reminder_minutes !== null && (
+                          <span className="rounded-full border border-orange-300 dark:border-orange-700 bg-orange-100 dark:bg-orange-900/30 px-2 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-400">
+                            🔔 {tmpl.reminder_minutes >= 10080 ? '1w' : tmpl.reminder_minutes >= 2880 ? '2d' : tmpl.reminder_minutes >= 1440 ? '1d' : tmpl.reminder_minutes >= 120 ? '2h' : tmpl.reminder_minutes >= 60 ? '1h' : tmpl.reminder_minutes >= 30 ? '30m' : '15m'}
+                          </span>
+                        )}
+                        <span className="text-xs text-gray-400 dark:text-gray-500 italic">&ldquo;{tmpl.title_template}&rdquo;</span>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        onClick={() => { onUse(tmpl); onClose(); }}
+                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 transition-colors"
+                      >Use</button>
+                      <button
+                        onClick={() => onDelete(tmpl.id)}
+                        className="rounded-lg border border-red-300 dark:border-red-700 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                      >Del</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── EditModal ────────────────────────────────────────────────────────────────
 
 interface EditModalProps {
@@ -669,6 +869,11 @@ export default function HomePage() {
   const [editingTodo, setEditingTodo] = useState<TodoWithExtras | null>(null);
   const [showTagModal, setShowTagModal] = useState(false);
 
+  // Template state
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [showTemplateManager, setShowTemplateManager] = useState(false);
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
+
   // ── Fetch ────────────────────────────────────────────────────────────────
 
   const fetchTodos = useCallback(async () => {
@@ -686,16 +891,24 @@ export default function HomePage() {
     }
   }, []);
 
+  const fetchTemplates = useCallback(async () => {
+    const res = await fetch('/api/templates');
+    if (res.ok) {
+      const data = await res.json();
+      setTemplates(data.templates ?? []);
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       const meRes = await fetch('/api/auth/me');
       if (!meRes.ok) { router.push('/login'); return; }
       const me = await meRes.json();
       setUsername(me.username);
-      await Promise.all([fetchTodos(), fetchTags()]);
+      await Promise.all([fetchTodos(), fetchTags(), fetchTemplates()]);
       setLoading(false);
     })();
-  }, [fetchTodos, fetchTags, router]);
+  }, [fetchTodos, fetchTags, fetchTemplates, router]);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -715,6 +928,28 @@ export default function HomePage() {
   function handleDismissBanner() {
     setNotifBannerDismissed(true);
     localStorage.setItem('notif-banner-dismissed', '1');
+  }
+
+  // ── Template management ───────────────────────────────────────────────────
+
+  function handleTemplateSaved(template: Template) {
+    setTemplates((prev) => [...prev, template].sort((a, b) => a.name.localeCompare(b.name)));
+  }
+
+  function handleTemplateDeleted(templateId: number) {
+    setTemplates((prev) => prev.filter((t) => t.id !== templateId));
+    fetch(`/api/templates/${templateId}`, { method: 'DELETE' });
+  }
+
+  async function handleUseTemplate(template: Template) {
+    const res = await fetch(`/api/templates/${template.id}/use`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) return;
+    const newTodo: TodoWithExtras = { ...(await res.json()), subtasks: [], tags: [] };
+    setTodos((prev) => [newTodo, ...prev]);
   }
 
   // ── Tag management ────────────────────────────────────────────────────────
@@ -1012,6 +1247,12 @@ export default function HomePage() {
             className="hidden"
             onChange={handleImport}
           />
+          <button
+            onClick={() => setShowTemplateManager(true)}
+            className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
+          >
+            📋 Templates{templates.length > 0 ? ` (${templates.length})` : ''}
+          </button>
           <a
             href="/calendar"
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-purple-700"
@@ -1146,6 +1387,34 @@ export default function HomePage() {
           >
             + Manage Tags
           </button>
+          <div className="flex items-center gap-2">
+            {templates.length > 0 && (
+              <select
+                value=""
+                onChange={(e) => {
+                  const tmpl = templates.find((t) => t.id === Number(e.target.value));
+                  if (tmpl) handleUseTemplate(tmpl);
+                }}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+              >
+                <option value="">Use Template...</option>
+                {templates.map((tmpl) => (
+                  <option key={tmpl.id} value={tmpl.id}>
+                    {tmpl.name}{tmpl.category ? ` (${tmpl.category})` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            {newTitle.trim() && (
+              <button
+                type="button"
+                onClick={() => setShowSaveTemplateModal(true)}
+                className="rounded-lg border border-blue-300 dark:border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+              >
+                💾 Save as Template
+              </button>
+            )}
+          </div>
         </div>
 
         {addError && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{addError}</p>}
@@ -1261,6 +1530,29 @@ export default function HomePage() {
           onTagCreated={handleTagCreated}
           onTagUpdated={handleTagUpdated}
           onTagDeleted={handleTagDeleted}
+        />
+      )}
+
+      {/* Template Manager Modal */}
+      {showTemplateManager && (
+        <TemplateManagerModal
+          templates={templates}
+          onClose={() => setShowTemplateManager(false)}
+          onUse={handleUseTemplate}
+          onDelete={handleTemplateDeleted}
+        />
+      )}
+
+      {/* Save Template Modal */}
+      {showSaveTemplateModal && (
+        <SaveTemplateModal
+          titleTemplate={newTitle.trim()}
+          priority={newPriority}
+          isRecurring={newIsRecurring}
+          recurrencePattern={newIsRecurring ? newRecurrencePattern : null}
+          reminderMinutes={newReminderMinutes}
+          onClose={() => setShowSaveTemplateModal(false)}
+          onSaved={handleTemplateSaved}
         />
       )}
     </div>
