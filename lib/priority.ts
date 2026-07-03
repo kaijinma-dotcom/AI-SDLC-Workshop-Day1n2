@@ -47,7 +47,7 @@ export const PRIORITY_CONFIG: Record<Priority, PriorityConfig> = {
  * Sort todos: High → Medium → Low.
  * Tie-break: earlier due_date first, then newer created_at first.
  */
-export function sortByPriority(todos: Todo[]): Todo[] {
+export function sortByPriority<T extends Todo>(todos: T[]): T[] {
   return [...todos].sort((a, b) => {
     const priorityDiff =
       (PRIORITY_ORDER[a.priority] ?? 1) - (PRIORITY_ORDER[b.priority] ?? 1);
@@ -65,10 +65,10 @@ export function sortByPriority(todos: Todo[]): Todo[] {
 
 // ─── Filtering ──────────────────────────────────────────────────────────────
 
-export function filterByPriority(
-  todos: Todo[],
+export function filterByPriority<T extends Todo>(
+  todos: T[],
   priority: Priority | 'all'
-): Todo[] {
+): T[] {
   if (priority === 'all') return todos;
   return todos.filter((t) => t.priority === priority);
 }

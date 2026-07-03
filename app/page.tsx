@@ -5,8 +5,19 @@ import { useRouter } from 'next/navigation';
 import {
   PRIORITY_CONFIG,
   sortByPriority,
-  filterByPriority,
 } from '@/lib/priority';
+import {
+  type FilterState,
+  DEFAULT_FILTER_STATE,
+  applyFilters,
+  hasActiveFilters,
+} from '@/lib/filters';
+import {
+  type FilterPreset,
+  getPresets as getStoredPresets,
+  savePreset as saveStoredPreset,
+  deletePreset as deleteStoredPreset,
+} from '@/lib/filterPresets';
 import { LEAD_TIME_OPTIONS, getReminderBadge } from '@/lib/reminders';
 import { useNotifications, requestNotificationPermission } from '@/lib/hooks/useNotifications';
 import type { Priority, RecurrencePattern, Subtask, Tag, Template, Todo } from '@/lib/db';
@@ -566,6 +577,71 @@ function TemplateManagerModal({ templates, onClose, onUse, onDelete }: TemplateM
 
 // ─── EditModal ────────────────────────────────────────────────────────────────
 
+
+// ─── SavePresetModal ──────────────────────────────────────────────────────────
+
+interface SavePresetModalProps {
+  filters: FilterState;
+  tags: Tag[];
+  onSave: (name: string) => void;
+  onClose: () => void;
+}
+
+function SavePresetModal({ filters, tags, onSave, onClose }: SavePresetModalProps) {
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+
+  function handleSave() {
+    const trimmed = name.trim();
+    if (!trimmed) { setError('Name is required'); return; }
+    onSave(trimmed);
+    onClose();
+  }
+
+  const tagName = filters.tagId !== null
+    ? tags.find((t) => t.id === filters.tagId)?.name ?? null
+    : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 dark:bg-black/60">
+      <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-2xl">
+        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">Save Filter Preset</h2>
+        {error && (
+          <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">{error}</div>
+        )}
+        <div className="mb-4 space-y-1 rounded-lg bg-gray-50 dark:bg-gray-700/50 p-3 text-sm text-gray-700 dark:text-gray-300">
+          {filters.search.trim() && <p>• Search: &ldquo;{filters.search.trim()}&rdquo;</p>}
+          {filters.priority !== 'all' && (
+            <p>• Priority: {filters.priority.charAt(0).toUpperCase() + filters.priority.slice(1)}</p>
+          )}
+          {tagName && <p>• Tag: {tagName}</p>}
+          {filters.completion !== 'all' && (
+            <p>• Completion: {filters.completion === 'incomplete' ? 'Incomplete only' : 'Completed only'}</p>
+          )}
+          {(filters.dateFrom || filters.dateTo) && (
+            <p>• Date range: {filters.dateFrom ?? '…'} to {filters.dateTo ?? '…'}</p>
+          )}
+        </div>
+        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Preset Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. This week's urgent tasks"
+          maxLength={100}
+          autoFocus
+          className="mb-4 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+        />
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">Cancel</button>
+          <button onClick={handleSave} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 transition-colors">Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface EditModalProps {
   todo: TodoWithExtras;
   allTags: Tag[];
@@ -776,7 +852,7 @@ function TodoCard({ todo, onToggle, onEdit, onDelete, onSubtasksChange }: TodoCa
             )}
             {todo.reminder_minutes !== null && todo.reminder_minutes !== undefined && (
               <span className="inline-flex items-center rounded-full border border-orange-300 bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-700 dark:border-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
-                &#128276; {getReminderBadge(todo.reminder_minutes)}
+                🔔 {getReminderBadge(todo.reminder_minutes)}
               </span>
             )}
             {todo.tags.map((tag) => (
@@ -861,9 +937,10 @@ export default function HomePage() {
   const [notifBannerDismissed, setNotifBannerDismissed] = useState(false);
 
   // Filter state
-  const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all');
-  const [tagFilter, setTagFilter] = useState<number | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTER_STATE);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [presets, setPresets] = useState<FilterPreset[]>([]);
 
   // Modal state
   const [editingTodo, setEditingTodo] = useState<TodoWithExtras | null>(null);
@@ -918,6 +995,11 @@ export default function HomePage() {
     }
   }, []);
 
+  // Load filter presets from localStorage on mount
+  useEffect(() => {
+    setPresets(getStoredPresets());
+  }, []);
+
   useNotifications(notifPermission === 'granted');
 
   async function handleEnableNotifications() {
@@ -970,7 +1052,7 @@ export default function HomePage() {
     setTodos((prev) =>
       prev.map((todo) => ({ ...todo, tags: todo.tags.filter((t) => t.id !== tagId) }))
     );
-    if (tagFilter === tagId) setTagFilter(null);
+    setFilters((f) => (f.tagId === tagId ? { ...f, tagId: null } : f));
     setNewSelectedTagIds((prev) => prev.filter((id) => id !== tagId));
   }
 
@@ -1150,14 +1232,7 @@ export default function HomePage() {
 
   // ── Derived display data ──────────────────────────────────────────────────
 
-  const filtered = filterByPriority(todos, priorityFilter)
-    .filter((t) => (tagFilter !== null ? t.tags.some((tag) => tag.id === tagFilter) : true))
-    .filter((t) =>
-      searchQuery
-        ? t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          t.subtasks.some((s) => s.title.toLowerCase().includes(searchQuery.toLowerCase()))
-        : true
-    );
+  const filtered = applyFilters(todos, filters);
 
   const overdueTodos = sortByPriority(filtered.filter(isOverdue));
   const pendingTodos = sortByPriority(filtered.filter((t) => !t.completed && !isOverdue(t)));
@@ -1319,7 +1394,7 @@ export default function HomePage() {
           >
             {LEAD_TIME_OPTIONS.map((opt) => (
               <option key={opt.value ?? 'none'} value={opt.value ?? ''}>
-                {opt.value === null ? '&#128276; Reminder' : `&#128276; ${opt.badge}`}
+                {opt.value === null ? '🔔 Reminder' : `🔔 ${opt.badge}`}
               </option>
             ))}
           </select>
@@ -1420,20 +1495,37 @@ export default function HomePage() {
         {addError && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{addError}</p>}
       </div>
 
-      {/* Search & Filter */}
+      {/* Search & Advanced Filters */}
       <div className="mb-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search todos and subtasks..."
-          className="mb-3 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
-        />
-        <div className="flex gap-2">
+
+        {/* Search bar with clear button */}
+        <div className="relative mb-3">
+          <span className="pointer-events-none absolute left-3 top-2.5 select-none text-sm text-gray-400">🔍</span>
+          <input
+            type="text"
+            value={filters.search}
+            onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
+            placeholder="Search todos and subtasks..."
+            className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-9 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          />
+          {filters.search && (
+            <button
+              type="button"
+              onClick={() => setFilters((f) => ({ ...f, search: '' }))}
+              className="absolute right-3 top-2 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-300"
+              aria-label="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        {/* Quick filter row */}
+        <div className="mb-2 flex flex-wrap gap-2">
           <select
-            value={priorityFilter}
-            onChange={(e) => setPriorityFilter(e.target.value as Priority | 'all')}
-            className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            value={filters.priority}
+            onChange={(e) => setFilters((f) => ({ ...f, priority: e.target.value as Priority | 'all' }))}
+            className="min-w-[120px] flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           >
             <option value="all">All Priorities</option>
             <option value="high">High Priority</option>
@@ -1442,9 +1534,9 @@ export default function HomePage() {
           </select>
           {tags.length > 0 && (
             <select
-              value={tagFilter ?? ''}
-              onChange={(e) => setTagFilter(e.target.value === '' ? null : Number(e.target.value))}
-              className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+              value={filters.tagId ?? ''}
+              onChange={(e) => setFilters((f) => ({ ...f, tagId: e.target.value === '' ? null : Number(e.target.value) }))}
+              className="min-w-[120px] flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
             >
               <option value="">All Tags</option>
               {tags.map((tag) => (
@@ -1452,7 +1544,102 @@ export default function HomePage() {
               ))}
             </select>
           )}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+              showAdvanced || filters.completion !== 'all' || filters.dateFrom || filters.dateTo
+                ? 'border-blue-500 bg-blue-600 text-white hover:bg-blue-700'
+                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600'
+            }`}
+          >
+            {showAdvanced ? '▼' : '▶'} Advanced
+          </button>
         </div>
+
+        {/* Advanced filters panel */}
+        {showAdvanced && (
+          <div className="mb-2 space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-700/50">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Completion Status</label>
+              <select
+                value={filters.completion}
+                onChange={(e) => setFilters((f) => ({ ...f, completion: e.target.value as 'all' | 'incomplete' | 'completed' }))}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+              >
+                <option value="all">All Todos</option>
+                <option value="incomplete">Incomplete Only</option>
+                <option value="completed">Completed Only</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Due Date Range</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={filters.dateFrom ?? ''}
+                  onChange={(e) => setFilters((f) => ({ ...f, dateFrom: e.target.value || null }))}
+                  className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                />
+                <span className="text-xs text-gray-400">to</span>
+                <input
+                  type="date"
+                  value={filters.dateTo ?? ''}
+                  onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value || null }))}
+                  className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                />
+              </div>
+              {filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo && (
+                <p className="mt-1 text-xs text-yellow-600 dark:text-yellow-400">⚠ From date is after To date — results may be empty</p>
+              )}
+            </div>
+            {presets.length > 0 && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">Saved Presets</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {presets.map((preset) => (
+                    <div key={preset.id} className="flex items-center gap-0.5 rounded-full border border-blue-200 bg-blue-50 dark:border-blue-700 dark:bg-blue-900/30">
+                      <button
+                        type="button"
+                        onClick={() => setFilters(preset.filters)}
+                        className="rounded-l-full px-3 py-0.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100 dark:text-blue-300 dark:hover:bg-blue-800/40"
+                      >
+                        {preset.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { deleteStoredPreset(preset.id); setPresets(getStoredPresets()); }}
+                        className="rounded-r-full px-2 py-0.5 text-xs text-blue-500 transition-colors hover:text-red-500 dark:text-blue-400 dark:hover:text-red-400"
+                        aria-label={`Delete preset ${preset.name}`}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {hasActiveFilters(filters) && (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setFilters(DEFAULT_FILTER_STATE); setShowAdvanced(false); }}
+              className="rounded-lg bg-red-100 px-3 py-1.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
+            >
+              Clear All
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSaveModal(true)}
+              className="rounded-lg bg-green-100 px-3 py-1.5 text-sm font-medium text-green-700 transition-colors hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400 dark:hover:bg-green-900/50"
+            >
+              💾 Save Filter
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Todo Sections */}
@@ -1553,6 +1740,19 @@ export default function HomePage() {
           reminderMinutes={newReminderMinutes}
           onClose={() => setShowSaveTemplateModal(false)}
           onSaved={handleTemplateSaved}
+        />
+      )}
+
+      {/* Save Filter Preset Modal */}
+      {showSaveModal && (
+        <SavePresetModal
+          filters={filters}
+          tags={tags}
+          onSave={(name) => {
+            const preset = saveStoredPreset(name, filters);
+            setPresets((prev) => [...prev, preset]);
+          }}
+          onClose={() => setShowSaveModal(false)}
         />
       )}
     </div>
