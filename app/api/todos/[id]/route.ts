@@ -1,8 +1,11 @@
 // app/api/todos/[id]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { todoDB } from '@/lib/db';
-import type { Priority } from '@/lib/db';
+import { todoDB, tagDB } from '@/lib/db';
+import { calculateNextDueDate } from '@/lib/recurrence';
+import type { Priority, RecurrencePattern } from '@/lib/db';
+
+const VALID_RECURRENCE: RecurrencePattern[] = ['daily', 'weekly', 'monthly', 'yearly'];
 
 const VALID_PRIORITIES: Priority[] = ['high', 'medium', 'low'];
 
@@ -59,6 +62,13 @@ export async function PUT(
     }
   }
 
+  // Validate recurrence_pattern if provided
+  if (body?.recurrence_pattern !== undefined && body.recurrence_pattern !== null) {
+    if (!VALID_RECURRENCE.includes(body.recurrence_pattern)) {
+      return NextResponse.json({ error: 'Invalid recurrence_pattern' }, { status: 400 });
+    }
+  }
+
   const updated = todoDB.update(todoId, {
     title: body?.title,
     completed: body?.completed,
@@ -70,7 +80,38 @@ export async function PUT(
     last_notification_sent: body?.last_notification_sent,
   });
 
-  return NextResponse.json(updated);
+  // Update tags if provided
+  if (Array.isArray(body?.tagIds)) {
+    tagDB.setTodoTags(todoId, body.tagIds as number[]);
+  }
+
+  // Create next recurring instance when completing a recurring todo
+  let nextTodo = null;
+  if (
+    body?.completed === true &&
+    existing.is_recurring &&
+    existing.recurrence_pattern &&
+    existing.due_date
+  ) {
+    const nextDueDate = calculateNextDueDate(existing.due_date, existing.recurrence_pattern);
+    const created = todoDB.create({
+      user_id: session.userId,
+      title: existing.title,
+      priority: existing.priority,
+      is_recurring: true,
+      recurrence_pattern: existing.recurrence_pattern,
+      reminder_minutes: existing.reminder_minutes ?? null,
+      due_date: nextDueDate,
+    });
+    // Copy tags to next instance
+    const existingTags = tagDB.getByTodoId(existing.id);
+    if (existingTags.length > 0) {
+      tagDB.setTodoTags(created.id, existingTags.map((t) => t.id));
+    }
+    nextTodo = { ...created, subtasks: [], tags: existingTags };
+  }
+
+  return NextResponse.json({ todo: updated, nextTodo });
 }
 
 export async function DELETE(

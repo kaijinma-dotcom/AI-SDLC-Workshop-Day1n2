@@ -1,10 +1,11 @@
 // app/api/todos/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { todoDB } from '@/lib/db';
-import type { Priority } from '@/lib/db';
+import { todoDB, subtaskDB, tagDB } from '@/lib/db';
+import type { Priority, RecurrencePattern } from '@/lib/db';
 
 const VALID_PRIORITIES: Priority[] = ['high', 'medium', 'low'];
+const VALID_RECURRENCE: RecurrencePattern[] = ['daily', 'weekly', 'monthly', 'yearly'];
 
 export async function GET() {
   const session = await getSession();
@@ -13,7 +14,18 @@ export async function GET() {
   }
 
   const todos = todoDB.getByUserId(session.userId);
-  return NextResponse.json({ todos });
+  const todoIds = todos.map((t) => t.id);
+
+  const allSubtasks = subtaskDB.getByTodoIds(todoIds);
+  const allTags = tagDB.getByTodoIds(todoIds);
+
+  const todosWithExtras = todos.map((todo) => ({
+    ...todo,
+    subtasks: allSubtasks.filter((s) => s.todo_id === todo.id),
+    tags: allTags.filter((t) => t.todo_id === todo.id).map(({ todo_id: _ignored, ...tag }) => tag),
+  }));
+
+  return NextResponse.json({ todos: todosWithExtras });
 }
 
 export async function POST(request: NextRequest) {
@@ -48,15 +60,34 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid due_date' }, { status: 400 });
   }
 
+  // Validate recurrence
+  const is_recurring: boolean = body?.is_recurring === true;
+  const recurrence_pattern: RecurrencePattern | null = body?.recurrence_pattern ?? null;
+  if (is_recurring && !due_date) {
+    return NextResponse.json({ error: 'Recurring todos require a due date' }, { status: 400 });
+  }
+  if (recurrence_pattern !== null && !VALID_RECURRENCE.includes(recurrence_pattern)) {
+    return NextResponse.json({ error: 'Invalid recurrence_pattern' }, { status: 400 });
+  }
+
   const todo = todoDB.create({
     user_id: session.userId,
     title,
     due_date,
     priority,
+    is_recurring,
+    recurrence_pattern: is_recurring ? recurrence_pattern : null,
     reminder_minutes: due_date
       ? (typeof body?.reminder_minutes === 'number' ? body.reminder_minutes : null)
       : null,
   });
 
-  return NextResponse.json(todo, { status: 201 });
+  // Apply tags
+  const tagIds: number[] = Array.isArray(body?.tagIds) ? body.tagIds : [];
+  if (tagIds.length > 0) {
+    tagDB.setTodoTags(todo.id, tagIds);
+  }
+
+  const tags = tagDB.getByTodoId(todo.id);
+  return NextResponse.json({ ...todo, subtasks: [], tags }, { status: 201 });
 }
