@@ -53,6 +53,9 @@ export async function POST(request: NextRequest) {
     title,
     due_date,
     priority,
+    reminder_minutes: due_date
+      ? (typeof body?.reminder_minutes === 'number' ? body.reminder_minutes : null)
+      : null,
   });
 
   return NextResponse.json(todo, { status: 201 });

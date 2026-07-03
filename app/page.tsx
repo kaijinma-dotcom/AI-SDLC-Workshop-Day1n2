@@ -7,6 +7,8 @@ import {
   sortByPriority,
   filterByPriority,
 } from '@/lib/priority';
+import { LEAD_TIME_OPTIONS, getReminderBadge } from '@/lib/reminders';
+import { useNotifications, requestNotificationPermission } from '@/lib/hooks/useNotifications';
 import type { Priority, Todo } from '@/lib/db';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -69,6 +71,9 @@ function EditModal({ todo, onClose, onSave }: EditModalProps) {
       ? new Date(todo.due_date).toISOString().slice(0, 16)
       : ''
   );
+  const [reminderMinutes, setReminderMinutes] = useState<number | null>(
+    todo.reminder_minutes ?? null
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -84,6 +89,7 @@ function EditModal({ todo, onClose, onSave }: EditModalProps) {
       title: trimmed,
       priority,
       due_date: dueDate ? new Date(dueDate).toISOString() : null,
+      reminder_minutes: dueDate ? reminderMinutes : null,
     });
     setSaving(false);
     onClose();
@@ -132,9 +138,31 @@ function EditModal({ todo, onClose, onSave }: EditModalProps) {
         <input
           type="datetime-local"
           value={dueDate}
-          onChange={(e) => setDueDate(e.target.value)}
-          className="mb-5 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onChange={(e) => {
+            setDueDate(e.target.value);
+            if (!e.target.value) setReminderMinutes(null);
+          }}
+          className="mb-3 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
+
+        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+          Reminder
+        </label>
+        <select
+          value={reminderMinutes ?? ''}
+          onChange={(e) =>
+            setReminderMinutes(e.target.value === '' ? null : Number(e.target.value))
+          }
+          disabled={!dueDate}
+          title={!dueDate ? 'Set a due date first' : undefined}
+          className="mb-5 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {LEAD_TIME_OPTIONS.map((opt) => (
+            <option key={opt.value ?? 'none'} value={opt.value ?? ''}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
 
         <div className="flex gap-2 justify-end">
           <button
@@ -204,6 +232,11 @@ function TodoCard({ todo, onToggle, onEdit, onDelete }: TodoCardProps) {
               {formatDueDate(todo.due_date)}
             </span>
           )}
+          {todo.reminder_minutes !== null && todo.reminder_minutes !== undefined && (
+            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 border border-orange-300 dark:border-orange-700">
+              🔔 {getReminderBadge(todo.reminder_minutes)}
+            </span>
+          )}
         </div>
       </div>
 
@@ -271,6 +304,11 @@ export default function HomePage() {
   const [newDueDate, setNewDueDate] = useState('');
   const [addError, setAddError] = useState('');
   const [adding, setAdding] = useState(false);
+  const [newReminderMinutes, setNewReminderMinutes] = useState<number | null>(null);
+
+  // Notification permission state
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>('default');
+  const [notifBannerDismissed, setNotifBannerDismissed] = useState(false);
 
   // Filter state
   const [priorityFilter, setPriorityFilter] = useState<Priority | 'all'>('all');
@@ -305,6 +343,28 @@ export default function HomePage() {
     })();
   }, [fetchTodos, router]);
 
+  // Sync notification permission on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      setNotifPermission(Notification.permission);
+      const dismissed = localStorage.getItem('notif-banner-dismissed') === '1';
+      setNotifBannerDismissed(dismissed);
+    }
+  }, []);
+
+  // Start polling when permission is granted
+  useNotifications(notifPermission === 'granted');
+
+  async function handleEnableNotifications() {
+    const result = await requestNotificationPermission();
+    setNotifPermission(result);
+  }
+
+  function handleDismissBanner() {
+    setNotifBannerDismissed(true);
+    localStorage.setItem('notif-banner-dismissed', '1');
+  }
+
   // ── Actions ─────────────────────────────────────────────────────────────
 
   async function handleAdd() {
@@ -325,7 +385,7 @@ export default function HomePage() {
       priority: newPriority,
       is_recurring: false,
       recurrence_pattern: null,
-      reminder_minutes: null,
+      reminder_minutes: newDueDate ? newReminderMinutes : null,
       last_notification_sent: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -344,6 +404,7 @@ export default function HomePage() {
           title,
           priority: newPriority,
           due_date: newDueDate ? new Date(newDueDate).toISOString() : null,
+          reminder_minutes: newDueDate ? newReminderMinutes : null,
         }),
       });
       if (!res.ok) {
@@ -358,6 +419,7 @@ export default function HomePage() {
       setTodos((prev) =>
         prev.map((t) => (t.id === optimistic.id ? created : t))
       );
+      setNewReminderMinutes(null);
     } finally {
       setAdding(false);
     }
@@ -461,13 +523,40 @@ export default function HomePage() {
             Welcome, {username}
           </p>
         </div>
-        <button
-          onClick={handleLogout}
-          className="rounded-lg bg-gray-800 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors"
-        >
-          Logout
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Notification enable/status button */}
+          <button
+            onClick={handleEnableNotifications}
+            className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              notifPermission === 'granted'
+                ? 'bg-green-600 text-white cursor-default'
+                : 'bg-orange-500 hover:bg-orange-600 text-white'
+            }`}
+          >
+            {notifPermission === 'granted' ? '🔔 Notifications On' : '🔔 Enable Notifications'}
+          </button>
+          <button
+            onClick={handleLogout}
+            className="rounded-lg bg-gray-800 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors"
+          >
+            Logout
+          </button>
+        </div>
       </div>
+
+      {/* Notification denied banner */}
+      {notifPermission === 'denied' && !notifBannerDismissed && (
+        <div className="mb-4 flex items-center justify-between rounded-xl bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 px-4 py-3">
+          <p className="text-sm text-yellow-800 dark:text-yellow-300">
+            Reminders are blocked. Enable notifications in your browser settings.
+          </p>
+          <button
+            onClick={handleDismissBanner}
+            className="ml-4 text-xs text-yellow-600 dark:text-yellow-400 hover:underline shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
 
       {/* Add Todo Form */}
       <div className="mb-6 rounded-2xl bg-white dark:bg-gray-800 p-4 shadow-sm border border-gray-200 dark:border-gray-700">
@@ -497,9 +586,29 @@ export default function HomePage() {
           <input
             type="datetime-local"
             value={newDueDate}
-            onChange={(e) => setNewDueDate(e.target.value)}
+            onChange={(e) => {
+              setNewDueDate(e.target.value);
+              if (!e.target.value) setNewReminderMinutes(null);
+            }}
             className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+
+          {/* Reminder dropdown */}
+          <select
+            value={newReminderMinutes ?? ''}
+            onChange={(e) =>
+              setNewReminderMinutes(e.target.value === '' ? null : Number(e.target.value))
+            }
+            disabled={!newDueDate}
+            title={!newDueDate ? 'Set a due date first' : 'Reminder'}
+            className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {LEAD_TIME_OPTIONS.map((opt) => (
+              <option key={opt.value ?? 'none'} value={opt.value ?? ''}>
+                {opt.value === null ? '🔔 Reminder' : `🔔 ${opt.badge}`}
+              </option>
+            ))}
+          </select>
 
           {/* Add button */}
           <button

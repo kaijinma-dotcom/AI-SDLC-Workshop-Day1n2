@@ -217,6 +217,7 @@ export interface UpdateTodoInput {
   is_recurring?: boolean;
   recurrence_pattern?: RecurrencePattern | null;
   reminder_minutes?: number | null;
+  last_notification_sent?: string | null;
 }
 
 export const todoDB = {
@@ -275,15 +276,16 @@ export const todoDB = {
 
     db.prepare(
       `UPDATE todos SET
-        title               = ?,
-        completed           = ?,
-        due_date            = ?,
-        priority            = ?,
-        is_recurring        = ?,
-        recurrence_pattern  = ?,
-        reminder_minutes    = ?,
-        completed_at        = ?,
-        updated_at          = ?
+        title                  = ?,
+        completed              = ?,
+        due_date               = ?,
+        priority               = ?,
+        is_recurring           = ?,
+        recurrence_pattern     = ?,
+        reminder_minutes       = ?,
+        last_notification_sent = ?,
+        completed_at           = ?,
+        updated_at             = ?
        WHERE id = ?`
     ).run(
       input.title !== undefined ? input.title.trim() : current.title,
@@ -293,6 +295,7 @@ export const todoDB = {
       input.is_recurring !== undefined ? (input.is_recurring ? 1 : 0) : current.is_recurring ? 1 : 0,
       input.recurrence_pattern !== undefined ? input.recurrence_pattern : current.recurrence_pattern,
       input.reminder_minutes !== undefined ? input.reminder_minutes : current.reminder_minutes,
+      input.last_notification_sent !== undefined ? input.last_notification_sent : current.last_notification_sent,
       completedAt,
       now,
       id
@@ -324,5 +327,28 @@ export const todoDB = {
     db.prepare(
       'UPDATE todos SET last_notification_sent = ? WHERE id = ?'
     ).run(sentAt, id);
+  },
+
+  /**
+   * Returns all incomplete todos for a user whose reminder time has passed
+   * and hasn't been notified yet (or was notified before the current reminder window).
+   */
+  getDueReminders(userId: number, nowISO: string): Todo[] {
+    const db = getDb();
+    const rows = db
+      .prepare(
+        `SELECT * FROM todos
+         WHERE user_id = ?
+           AND completed = 0
+           AND reminder_minutes IS NOT NULL
+           AND due_date IS NOT NULL
+           AND datetime(due_date, '-' || reminder_minutes || ' minutes') <= datetime(?)
+           AND (
+             last_notification_sent IS NULL
+             OR last_notification_sent < datetime(due_date, '-' || reminder_minutes || ' minutes')
+           )`
+      )
+      .all(userId, nowISO) as Record<string, unknown>[];
+    return rows.map(rowToTodo);
   },
 };

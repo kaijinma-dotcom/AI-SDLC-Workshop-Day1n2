@@ -67,6 +67,7 @@ export async function PUT(
     is_recurring: body?.is_recurring,
     recurrence_pattern: body?.recurrence_pattern,
     reminder_minutes: body?.reminder_minutes,
+    last_notification_sent: body?.last_notification_sent,
   });
 
   return NextResponse.json(updated);
