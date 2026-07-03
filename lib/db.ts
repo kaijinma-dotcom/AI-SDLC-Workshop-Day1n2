@@ -43,6 +43,22 @@ export interface Authenticator {
   created_at: string;
 }
 
+export interface Holiday {
+  id: number;
+  date: string;
+  name: string;
+  year: number;
+}
+
+export interface CalendarDay {
+  date: Date;
+  dateStr: string;
+  isCurrentMonth: boolean;
+  isToday: boolean;
+  todos: Todo[];
+  holiday: Holiday | null;
+}
+
 // ─── Database Initialisation ────────────────────────────────────────────────
 
 const DB_PATH = path.join(process.cwd(), 'todos.db');
@@ -91,6 +107,16 @@ function initSchema(db: Database.Database): void {
       updated_at            TEXT NOT NULL,
       completed_at          TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS holidays (
+      id    INTEGER PRIMARY KEY AUTOINCREMENT,
+      date  TEXT NOT NULL UNIQUE,
+      name  TEXT NOT NULL,
+      year  INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date);
+    CREATE INDEX IF NOT EXISTS idx_holidays_year ON holidays(year);
   `);
 }
 
@@ -220,6 +246,14 @@ export interface UpdateTodoInput {
   last_notification_sent?: string | null;
 }
 
+export interface ImportTodoInput extends CreateTodoInput {
+  completed?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
+  last_notification_sent?: string | null;
+}
+
 export const todoDB = {
   getByUserId(userId: number): Todo[] {
     const db = getDb();
@@ -258,6 +292,38 @@ export const todoDB = {
         now,
         now
       );
+    return this.getById(result.lastInsertRowid as number)!;
+  },
+
+  createFromImport(input: ImportTodoInput): Todo {
+    const db = getDb();
+    const createdAt = input.created_at ?? nowISO();
+    const updatedAt = input.updated_at ?? createdAt;
+    const completed = input.completed === true;
+    const completedAt = completed ? input.completed_at ?? updatedAt : null;
+    const result = db
+      .prepare(
+        `INSERT INTO todos
+         (user_id, title, completed, due_date, priority, is_recurring,
+          recurrence_pattern, reminder_minutes, last_notification_sent,
+          created_at, updated_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.user_id,
+        input.title.trim(),
+        completed ? 1 : 0,
+        input.due_date ?? null,
+        input.priority ?? 'medium',
+        input.is_recurring ? 1 : 0,
+        input.recurrence_pattern ?? null,
+        input.reminder_minutes ?? null,
+        input.last_notification_sent ?? null,
+        createdAt,
+        updatedAt,
+        completedAt
+      );
+
     return this.getById(result.lastInsertRowid as number)!;
   },
 
@@ -350,5 +416,28 @@ export const todoDB = {
       )
       .all(userId, nowISO) as Record<string, unknown>[];
     return rows.map(rowToTodo);
+  },
+};
+
+export const holidayDB = {
+  getByYear(year: number): Holiday[] {
+    const db = getDb();
+    return db
+      .prepare('SELECT * FROM holidays WHERE year = ? ORDER BY date')
+      .all(year) as Holiday[];
+  },
+
+  getByDateRange(from: string, to: string): Holiday[] {
+    const db = getDb();
+    return db
+      .prepare('SELECT * FROM holidays WHERE date >= ? AND date <= ? ORDER BY date')
+      .all(from, to) as Holiday[];
+  },
+
+  upsert(data: { date: string; name: string; year: number }): void {
+    const db = getDb();
+    db.prepare(
+      'INSERT OR REPLACE INTO holidays (date, name, year) VALUES (?, ?, ?)'
+    ).run(data.date, data.name, data.year);
   },
 };

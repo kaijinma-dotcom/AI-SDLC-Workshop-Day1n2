@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, type ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   PRIORITY_CONFIG,
@@ -297,6 +297,9 @@ export default function HomePage() {
   const [username, setUsername] = useState('');
   const [todos, setTodos] = useState<Todo[]>([]);
   const [loading, setLoading] = useState(true);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
 
   // Form state
   const [newTitle, setNewTitle] = useState('');
@@ -483,6 +486,37 @@ export default function HomePage() {
     router.push('/login');
   }
 
+  async function handleImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const res = await fetch('/api/todos/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+
+      if (!res.ok) {
+        throw new Error('Import failed');
+      }
+
+      const { count } = (await res.json()) as { count: number };
+      setSuccessMessage(`Successfully imported ${count} todos`);
+      setErrorMessage('');
+      setTimeout(() => setSuccessMessage(''), 3000);
+      await fetchTodos();
+    } catch {
+      setErrorMessage('Failed to import todos. Please check the file format.');
+      setSuccessMessage('');
+      setTimeout(() => setErrorMessage(''), 3000);
+    }
+
+    event.target.value = '';
+  }
+
   // ── Derived display data ─────────────────────────────────────────────────
 
   const filtered = filterByPriority(todos, priorityFilter).filter((t) =>
@@ -513,34 +547,81 @@ export default function HomePage() {
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-8">
-      {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            Todo App
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Welcome, {username}
-          </p>
+      {successMessage && (
+        <div className="mb-4 rounded-lg border border-green-200 bg-green-100 px-4 py-3 text-sm text-green-700 dark:border-green-700 dark:bg-green-900/30 dark:text-green-300">
+          {successMessage}
         </div>
-        <div className="flex items-center gap-2">
-          {/* Notification enable/status button */}
-          <button
-            onClick={handleEnableNotifications}
-            className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-              notifPermission === 'granted'
-                ? 'bg-green-600 text-white cursor-default'
-                : 'bg-orange-500 hover:bg-orange-600 text-white'
-            }`}
+      )}
+      {errorMessage && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-100 px-4 py-3 text-sm text-red-700 dark:border-red-700 dark:bg-red-900/30 dark:text-red-300">
+          {errorMessage}
+        </div>
+      )}
+
+      <div className="mb-6 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+              Todo App
+            </h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Welcome, {username}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleEnableNotifications}
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                notifPermission === 'granted'
+                  ? 'bg-green-600 text-white cursor-default'
+                  : 'bg-orange-500 hover:bg-orange-600 text-white'
+              }`}
+            >
+              {notifPermission === 'granted' ? '🔔 Notifications On' : '🔔 Enable Notifications'}
+            </button>
+            <button
+              onClick={handleLogout}
+              className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <a
+            href="/api/todos/export?format=json"
+            download
+            className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700"
           >
-            {notifPermission === 'granted' ? '🔔 Notifications On' : '🔔 Enable Notifications'}
-          </button>
-          <button
-            onClick={handleLogout}
-            className="rounded-lg bg-gray-800 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors"
+            Export JSON
+          </a>
+          <a
+            href="/api/todos/export?format=csv"
+            download
+            className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-800"
           >
-            Logout
+            Export CSV
+          </a>
+          <button
+            onClick={() => importInputRef.current?.click()}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+          >
+            Import
           </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImport}
+          />
+          <a
+            href="/calendar"
+            className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-purple-700"
+          >
+            Calendar
+          </a>
         </div>
       </div>
 
@@ -557,6 +638,7 @@ export default function HomePage() {
             Dismiss
           </button>
         </div>
+      )}
 
       {/* Add Todo Form */}
       <div className="mb-6 rounded-2xl bg-white dark:bg-gray-800 p-4 shadow-sm border border-gray-200 dark:border-gray-700">

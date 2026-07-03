@@ -3,11 +3,7 @@
 
 import { SignJWT, jwtVerify } from 'jose';
 import { cookies } from 'next/headers';
-
-const SESSION_COOKIE = 'session';
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET ?? 'todo-app-dev-secret-change-in-production-32chars'
-);
+import { getJwtSecret, SESSION_COOKIE } from './session';
 const SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 export interface Session {
@@ -23,7 +19,7 @@ export async function createSession(session: Session): Promise<void> {
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(`${SESSION_DURATION_SECONDS}s`)
-    .sign(JWT_SECRET);
+    .sign(getJwtSecret());
 
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, token, {
@@ -45,7 +41,7 @@ export async function getSession(): Promise<Session | null> {
     const token = cookieStore.get(SESSION_COOKIE)?.value;
     if (!token) return null;
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
+    const { payload } = await jwtVerify(token, getJwtSecret());
     if (
       typeof payload.userId === 'number' &&
       typeof payload.username === 'string'
